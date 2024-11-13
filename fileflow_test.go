@@ -1,30 +1,13 @@
 package fileflow
 
 import (
+	"bytes"
+	"context"
 	"io/ioutil"
 	"os"
+	"path/filepath"
 	"testing"
 )
-
-func TestNewIncrementedName(t *testing.T) {
-	testCases := []struct {
-		name     string
-		i        int
-		expected string
-	}{
-		{"file.txt", 1, "file-1.txt"},
-		{"file.txt", 10, "file-10.txt"},
-		{"folder/file.txt", 2, "folder/file-2.txt"},
-		{"file", 0, "file-0"},
-	}
-
-	for _, tc := range testCases {
-		result := newIncrementedName(tc.name, tc.i)
-		if result != tc.expected {
-			t.Errorf("newIncrementedName(%q, %d) = %q; want %q", tc.name, tc.i, result, tc.expected)
-		}
-	}
-}
 
 func TestIdenticalFiles(t *testing.T) {
 	testCases := []struct {
@@ -53,18 +36,27 @@ func TestIdenticalFiles(t *testing.T) {
 	defer os.Remove("file3.txt")
 
 	for _, tc := range testCases {
-		result := IdenticalFiles(tc.file1, tc.file2)
+		result, err := IdenticalFiles(tc.file1, tc.file2)
+		if err != nil {
+			t.Errorf("IdenticalFiles(%q, %q) unexpected error: %v", tc.file1, tc.file2, err)
+			continue
+		}
 		if result != tc.expected {
 			t.Errorf("IdenticalFiles(%q, %q) = %v; want %v", tc.file1, tc.file2, result, tc.expected)
 		}
 	}
-
-	os.Remove("file1.txt")
-	os.Remove("file2.txt")
-	os.Remove("file3.txt")
 }
 
-func TestMoveFile(t *testing.T) {
+func TestCopyFile(t *testing.T) {
+	ctx := context.Background()
+
+	// Create a temporary directory for test files
+	tempDir, err := ioutil.TempDir("", "fileflow_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tempDir)
+
 	testCases := []struct {
 		src, dst string
 		expected bool
@@ -73,28 +65,42 @@ func TestMoveFile(t *testing.T) {
 		{"fileb.txt", "folder/file2.txt", true},
 	}
 
-	// Create test files
-	if err := ioutil.WriteFile("filea.txt", []byte("Hello World"), 0666); err != nil {
+	// Create test files in temp directory
+	if err := ioutil.WriteFile(filepath.Join(tempDir, "filea.txt"), []byte("Hello World"), 0666); err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove("filea.txt")
-	if err := ioutil.WriteFile("fileb.txt", []byte("Hello World"), 0666); err != nil {
+	if err := ioutil.WriteFile(filepath.Join(tempDir, "fileb.txt"), []byte("Hello World"), 0666); err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove("fileb.txt")
 
 	for _, tc := range testCases {
-		os.Mkdir("folder", os.ModePerm)
-		err := MoveFile(tc.src, tc.dst)
-		if (err == nil) != tc.expected {
-			t.Errorf("MoveFile(%q, %q) = %v; want %v", tc.src, tc.dst, (err == nil), tc.expected)
+		srcPath := filepath.Join(tempDir, tc.src)
+		dstPath := filepath.Join(tempDir, tc.dst)
+
+		// Create folder if needed
+		if filepath.Dir(dstPath) != tempDir {
+			if err := os.MkdirAll(filepath.Dir(dstPath), os.ModePerm); err != nil {
+				t.Fatal(err)
+			}
 		}
-		os.Remove(tc.dst)
+
+		err := CopyFile(ctx, srcPath, dstPath)
+		if (err == nil) != tc.expected {
+			t.Errorf("CopyFile(%q, %q) = %v; want %v", srcPath, dstPath, (err == nil), tc.expected)
+		}
 	}
-	os.RemoveAll("folder")
 }
 
 func TestSafeMoveFile(t *testing.T) {
+	ctx := context.Background()
+
+	// Create a temporary directory for test files
+	tempDir, err := ioutil.TempDir("", "fileflow_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tempDir)
+
 	testCases := []struct {
 		src, dst, actualdst string
 		expected            bool
@@ -103,59 +109,68 @@ func TestSafeMoveFile(t *testing.T) {
 		{"file0.txt", "file0.txt", "", false, false},                      // File same
 		{"file1.txt", "file2.txt", "file2.txt", true, true},               // Basic move
 		{"fileA.txt", "folder/fileA.txt", "folder/fileA.txt", true, true}, // Basic move with folder
-		{"fileB.txt", "fileB-diff.txt", "fileB-diff-1.txt", false, true},  // dst file exists and is different
-		{"fileC.txt", "fileC-1.txt", "fileC-1.txt", false, true},          // dst file exists and is the same
-		{"fileD.txt", "fileD-1.txt", "fileD-2.txt", false, true},          // dst file exists and is different, and incremented
+		{"fileB.txt", "fileB-diff.txt", "fileB-diff-1.txt", true, true},   // dst file exists and is different
+		{"fileC.txt", "fileC-1.txt", "fileC-1.txt", true, true},           // dst file exists and is the same
+		{"fileD.txt", "fileD-1.txt", "fileD-2.txt", true, true},           // dst file exists and is different, and incremented
 	}
 
-	// Create test files
+	// Create test files in temp directory
 	for _, tc := range testCases {
-		if err := ioutil.WriteFile(tc.src, []byte("Hello World"), 0666); err != nil {
+		srcPath := filepath.Join(tempDir, tc.src)
+		if err := ioutil.WriteFile(srcPath, []byte("Hello World"), 0666); err != nil {
 			t.Fatal(err)
 		}
-		defer os.Remove(tc.src)
 	}
 
-	if err := ioutil.WriteFile("fileB-diff.txt", []byte("Hello World FOO"), 0666); err != nil {
+	// Create additional test files
+	if err := ioutil.WriteFile(filepath.Join(tempDir, "fileB-diff.txt"), []byte("Hello World FOO"), 0666); err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove("fileB-diff.txt")
-	defer os.Remove("fileB-diff-1.txt")
-
-	if err := ioutil.WriteFile("fileC-1.txt", []byte("Hello World"), 0666); err != nil {
+	if err := ioutil.WriteFile(filepath.Join(tempDir, "fileC-1.txt"), []byte("Hello World"), 0666); err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove("fileC-1.txt")
-	if err := ioutil.WriteFile("fileD.txt", []byte("Hello World"), 0666); err != nil {
+	if err := ioutil.WriteFile(filepath.Join(tempDir, "fileD-1.txt"), []byte("Hello World FOO"), 0666); err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove("fileD.txt")
-	if err := ioutil.WriteFile("fileD-1.txt", []byte("Hello World FOO"), 0666); err != nil {
-		t.Fatal(err)
-	}
-	defer os.Remove("fileD-1.txt")
-	defer os.Remove("fileD-2.txt")
 
 	for _, tc := range testCases {
-		os.Mkdir("folder", os.ModePerm)
-		finaldst, err := SafeMoveFile(tc.src, tc.dst)
+		srcPath := filepath.Join(tempDir, tc.src)
+		dstPath := filepath.Join(tempDir, tc.dst)
+		expectedDstPath := filepath.Join(tempDir, tc.actualdst)
 
-		if (err == nil) != tc.expected && finaldst != tc.actualdst {
-			t.Errorf("SafeMoveFile(%q, %q) = %v, %v; want %v, %v", tc.src, tc.dst, finaldst, (err == nil), tc.actualdst, tc.expected)
-		}
-
-		if tc.dstExists {
-			if !FileExists(tc.dst) {
-				t.Errorf("SafeMoveFile(%q, %q) = %v, %v; want %v, %v", tc.src, tc.dst, finaldst, (err == nil), tc.actualdst, tc.expected)
+		// Create folder if needed
+		if filepath.Dir(dstPath) != tempDir {
+			if err := os.MkdirAll(filepath.Dir(dstPath), os.ModePerm); err != nil {
+				t.Fatal(err)
 			}
 		}
 
-		defer os.Remove(tc.dst)
+		finaldst, err := SafeMoveFile(ctx, srcPath, dstPath)
+		if tc.expected && err != nil {
+			t.Errorf("SafeMoveFile(%q, %q) unexpected error: %v", srcPath, dstPath, err)
+			continue
+		}
+		if !tc.expected && err == nil {
+			t.Errorf("SafeMoveFile(%q, %q) expected error but got none", srcPath, dstPath)
+			continue
+		}
+		if tc.expected && tc.actualdst != "" && finaldst != expectedDstPath {
+			t.Errorf("SafeMoveFile(%q, %q) = %v; want %v", srcPath, dstPath, finaldst, expectedDstPath)
+		}
+		if tc.dstExists && !FileExists(dstPath) {
+			t.Errorf("SafeMoveFile(%q, %q) destination file doesn't exist", srcPath, dstPath)
+		}
 	}
-	os.RemoveAll("folder")
 }
 
 func TestFileExists(t *testing.T) {
+	// Create a temporary directory for test files
+	tempDir, err := ioutil.TempDir("", "fileflow_test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tempDir)
+
 	testCases := []struct {
 		file     string
 		expected bool
@@ -165,66 +180,84 @@ func TestFileExists(t *testing.T) {
 		{"folder/file1.txt", false},
 	}
 
-	// Create test files
-	if err := ioutil.WriteFile("file1.txt", []byte("Hello World"), 0666); err != nil {
+	// Create test file
+	if err := ioutil.WriteFile(filepath.Join(tempDir, "file1.txt"), []byte("Hello World"), 0666); err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove("file1.txt")
 
 	for _, tc := range testCases {
-		result := FileExists(tc.file)
+		path := filepath.Join(tempDir, tc.file)
+		result := FileExists(path)
 		if result != tc.expected {
-			t.Errorf("FileExists(%q) = %v; want %v", tc.file, result, tc.expected)
+			t.Errorf("FileExists(%q) = %v; want %v", path, result, tc.expected)
 		}
 	}
 }
 
-func Test_newIncrementedName(t *testing.T) {
-	type args struct {
-		name string
-		i    int
-	}
-	tests := []struct {
-		name string
-		args args
-		want string
-	}{
-		{"file.txt", args{"file.txt", 1}, "file-1.txt"},
-		{"file.txt", args{"file.txt", 2}, "file-2.txt"},
-		{"file.txt", args{"file-1.txt", 3}, "file-3.txt"},
-		{"file.txt", args{"file-1-2.txt", 3}, "file-1-3.txt"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := newIncrementedName(tt.args.name, tt.args.i); got != tt.want {
-				t.Errorf("newIncrementedName() = %v, want %v", got, tt.want)
-			}
-		})
-	}
-}
-
 func TestSafeMoveFileEfficient(t *testing.T) {
-	type args struct {
-		src string
-		dst string
+	ctx := context.Background()
+	// Create test directory and files
+	testDir, err := ioutil.TempDir("", "fileflow_test_efficient")
+	if err != nil {
+		t.Fatal(err)
 	}
+	defer os.RemoveAll(testDir)
+
+	srcContent := []byte("test content")
+	srcPath := filepath.Join(testDir, "source.txt")
+	dstPath := filepath.Join(testDir, "dest.txt")
+
+	if err := ioutil.WriteFile(srcPath, srcContent, 0644); err != nil {
+		t.Fatal(err)
+	}
+
 	tests := []struct {
 		name    string
-		args    args
+		src     string
+		dst     string
 		want    string
 		wantErr bool
 	}{
-		// TODO: Add test cases.
+		{
+			name:    "Basic move",
+			src:     srcPath,
+			dst:     dstPath,
+			want:    dstPath,
+			wantErr: false,
+		},
+		{
+			name:    "Same file",
+			src:     srcPath,
+			dst:     srcPath,
+			want:    "",
+			wantErr: true,
+		},
 	}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := SafeMoveFileEfficient(tt.args.src, tt.args.dst)
+			// Reset source file for each test
+			if err := ioutil.WriteFile(srcPath, srcContent, 0644); err != nil {
+				t.Fatal(err)
+			}
+
+			got, err := SafeMoveFileEfficient(ctx, tt.src, tt.dst)
 			if (err != nil) != tt.wantErr {
 				t.Errorf("SafeMoveFileEfficient() error = %v, wantErr %v", err, tt.wantErr)
 				return
 			}
 			if got != tt.want {
 				t.Errorf("SafeMoveFileEfficient() = %v, want %v", got, tt.want)
+			}
+
+			if !tt.wantErr {
+				// Verify destination file exists and has correct content
+				content, err := ioutil.ReadFile(tt.dst)
+				if err != nil {
+					t.Errorf("Failed to read destination file: %v", err)
+				} else if !bytes.Equal(content, srcContent) {
+					t.Errorf("Destination file content = %v, want %v", content, srcContent)
+				}
 			}
 		})
 	}

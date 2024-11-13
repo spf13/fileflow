@@ -3,293 +3,287 @@ package fileflow
 import (
 	"bufio"
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"path/filepath"
 	"regexp"
-	"strconv"
 	"syscall"
 )
 
+const (
+	// DefaultBufferSize is the default buffer size used for file operations
+	DefaultBufferSize = 32 * 1024 // 32KB buffer
+	// MaxIncrementAttempts is the maximum number of attempts to increment a filename
+	MaxIncrementAttempts = 100
+	// DefaultFileMode is the default permission mode for new files
+	DefaultFileMode = 0644
+	// DefaultDirMode is the default permission mode for new directories
+	DefaultDirMode = 0755
+)
+
+var (
+	ErrSameFile           = errors.New("source and destination are the same")
+	ErrMaxAttemptsReached = errors.New("maximum increment attempts reached")
+)
+
+// ErrFailedRemovingOriginal occurs when the original file cannot be removed
 type ErrFailedRemovingOriginal struct {
-	input error
+	inner error
 	file  string
 }
 
-func (e ErrFailedRemovingOriginal) Error() string {
-	return fmt.Sprintf("failed removing original file %v", e.file)
+func (e *ErrFailedRemovingOriginal) Error() string {
+	return fmt.Sprintf("failed removing original file %v: %v", e.file, e.inner)
 }
 
+func (e *ErrFailedRemovingOriginal) Unwrap() error {
+	return e.inner
+}
+
+// ErrFailedCopyingFile occurs when a file copy operation fails
 type ErrFailedCopyingFile struct {
-	input error
+	inner error
 	src   string
 	dst   string
 }
 
-func (e ErrFailedCopyingFile) Error() string {
-	return fmt.Sprintf("failed copying file %v to %v", e.src, e.dst)
+func (e *ErrFailedCopyingFile) Error() string {
+	return fmt.Sprintf("failed copying file %v to %v: %v", e.src, e.dst, e.inner)
 }
 
+func (e *ErrFailedCopyingFile) Unwrap() error {
+	return e.inner
+}
+
+// ErrFailedMovingFile occurs when a file move operation fails
 type ErrFailedMovingFile struct {
-	input error
+	inner error
 	src   string
 	dst   string
 }
 
-func (e ErrFailedMovingFile) Error() string {
-	return fmt.Sprintf("failed moving file %v to %v", e.src, e.dst)
+func (e *ErrFailedMovingFile) Error() string {
+	return fmt.Sprintf("failed moving file %v to %v: %v", e.src, e.dst, e.inner)
 }
 
-// SafeMoveEfficient moves a file from src to dst, and returns the final destination
-// it first tries to rename, if the file is on a different drive, it moves instead
-func SafeMoveFileEfficient(src, dst string) (string, error) {
-	final, err := SafeRename(src, dst)
-
-	if err != nil {
-		terr, ok := err.(*os.LinkError)
-		if ok && terr.Err == syscall.EXDEV {
-			// if the file is on a different drive, copy it instead
-			final, err = SafeMoveFile(src, dst)
-		}
-	}
-
-	return final, err
+func (e *ErrFailedMovingFile) Unwrap() error {
+	return e.inner
 }
 
-// SafeMoveFile moves a file from src to dst, and returns the final destination
-// It ensures that the dst file is not overwritten unless it is identical to the src file
-// It will append -1, -2, -3, etc to the end of the file if it already exists (and isn't identical)
-func SafeRename(src, dst string) (string, error) {
+// SafeMoveFileEfficient moves a file from src to dst efficiently, and returns the final destination.
+// It first attempts to rename the file, falling back to copy+delete if the files are on different filesystems.
+func SafeMoveFileEfficient(ctx context.Context, src, dst string) (string, error) {
 	if src == dst {
-		return "", fmt.Errorf("source and destination are the same")
+		return "", ErrSameFile
 	}
-	// if file exists, check if it's the same file
-	// if it's the same file, remove the old one
-	// if it's a different file, name the new one dst-1, dst-2, etc
 
-	// if file exists, check if it's the same file
-	if FileExists(dst) {
-		if IdenticalFiles(src, dst) { // if it's the same file, remove the old one
-			err := os.Remove(src)
-			if err != nil {
-				return dst, &ErrFailedRemovingOriginal{input: err, file: src}
-			}
-			return dst, nil // successfully remove the file, return nil
-		} else { // if it's a different file, rename the new one
-			for x := 1; x < 100; x++ {
-				// try to rename the file with -1, -2, -3, etc appended to the end
-				newDst := newIncrementedName(dst, x)
-				fmt.Println("newDst", newDst)
-				if !FileExists(newDst) {
-					// if the file doesn't exist, move it there
-					newdst, err := SafeRename(src, newDst)
-					if err != nil {
-						return "", &ErrFailedMovingFile{input: err, src: src, dst: dst}
-					}
-					return newdst, nil
-				}
-
-			}
+	final, err := SafeRename(ctx, src, dst)
+	if err != nil {
+		var linkErr *os.LinkError
+		if errors.As(err, &linkErr) && linkErr.Err == syscall.EXDEV {
+			// If the file is on a different drive, copy it instead
+			return SafeMoveFile(ctx, src, dst)
 		}
+		return "", err
 	}
-	{
-		err := os.MkdirAll(filepath.Dir(dst), 0755)
+
+	return final, nil
+}
+
+// SafeRename attempts to rename a file from src to dst, handling naming conflicts.
+// It returns the final destination path.
+func SafeRename(ctx context.Context, src, dst string) (string, error) {
+	if src == dst {
+		return "", ErrSameFile
+	}
+
+	if FileExists(dst) {
+		identical, err := IdenticalFiles(src, dst)
 		if err != nil {
-			return "", fmt.Errorf("failed creating destination path: %s", err)
+			return "", fmt.Errorf("checking file identity: %w", err)
+		}
+
+		if identical {
+			if err := os.Remove(src); err != nil {
+				return dst, &ErrFailedRemovingOriginal{inner: err, file: src}
+			}
+			return dst, nil
+		}
+
+		// Find an available filename
+		dst, err = findAvailableName(dst)
+		if err != nil {
+			return "", fmt.Errorf("finding available name: %w", err)
 		}
 	}
-	// if dst file doesn't exist, move src to it
-	err := os.Rename(src, dst)
-	if err != nil {
-		return "", &ErrFailedMovingFile{input: err, src: src, dst: dst}
+
+	if err := os.MkdirAll(filepath.Dir(dst), DefaultDirMode); err != nil {
+		return "", fmt.Errorf("creating destination directory: %w", err)
 	}
+
+	if err := os.Rename(src, dst); err != nil {
+		return "", &ErrFailedMovingFile{inner: err, src: src, dst: dst}
+	}
+
 	return dst, nil
 }
 
-// MoveFile moves a file from src to dst, renaming it if necessary
-// It will not overwrite an existing file, but will rename the new file
-// to dst-1, dst-2, etc
-// Will return the final name of the file written to dst and an error
-func SafeMoveFile(src, dst string) (string, error) {
+// SafeMoveFile moves a file from src to dst, handling naming conflicts.
+// It ensures that the dst file is not overwritten unless it is identical to the src file.
+func SafeMoveFile(ctx context.Context, src, dst string) (string, error) {
 	if src == dst {
-		return "", fmt.Errorf("source and destination are the same")
+		return "", ErrSameFile
 	}
-	// if file exists, check if it's the same file
-	// if it's the same file, remove the old one
-	// if it's a different file, name the new one dst-1, dst-2, etc
 
-	// if file exists, check if it's the same file
 	if FileExists(dst) {
-		if IdenticalFiles(src, dst) { // if it's the same file, remove the old one
-			err := os.Remove(src)
-			if err != nil {
-				return dst, &ErrFailedRemovingOriginal{input: err, file: src}
-			}
-			return dst, nil // successfully remove the file, return nil
-		} else { // if it's a different file, rename the new one
-			for x := 1; x < 100; x++ {
-				// try to rename the file with -1, -2, -3, etc appended to the end
-				newDst := newIncrementedName(dst, x)
-				fmt.Println("newDst", newDst)
-				if !FileExists(newDst) {
-					// if the file doesn't exist, move it there
-					newdst, err := SafeMoveFile(src, newDst)
-					if err != nil {
-						return "", &ErrFailedMovingFile{input: err, src: src, dst: dst}
-					}
-					return newdst, nil
-				}
+		identical, err := IdenticalFiles(src, dst)
+		if err != nil {
+			return "", fmt.Errorf("checking file identity: %w", err)
+		}
 
+		if identical {
+			if err := os.Remove(src); err != nil {
+				return dst, &ErrFailedRemovingOriginal{inner: err, file: src}
 			}
+			return dst, nil
+		}
+
+		// Find an available filename
+		dst, err = findAvailableName(dst)
+		if err != nil {
+			return "", fmt.Errorf("finding available name: %w", err)
 		}
 	}
 
-	// if file doesn't exist, move it
-	err := CopyFileCreatingPaths(src, dst)
-	if err != nil {
-		fmt.Println("failed copying file", err)
-		return "", &ErrFailedCopyingFile{input: err, src: src, dst: dst}
+	if err := CopyFileCreatingPaths(ctx, src, dst); err != nil {
+		return "", err
 	}
 
-	// Even if the nested remove fails, this will remove it on the parent run.
-	err = os.Remove(src)
-	if err != nil {
-		return dst, &ErrFailedCopyingFile{input: err, src: src, dst: dst}
+	if err := os.Remove(src); err != nil {
+		return dst, &ErrFailedRemovingOriginal{inner: err, file: src}
 	}
 
 	return dst, nil
 }
 
-// FileExists returns true if the file exists
+// FileExists returns true if the file exists and is accessible
 func FileExists(path string) bool {
 	_, err := os.Stat(path)
-	if err != nil {
-		return false
-	}
-	return true
+	return err == nil
 }
 
-// newIncrementedName returns a new name for a file, appending -1, -2, -3, etc to the end
-// replacing any existing -1, -2, -3, etc (only the final -N)
-func newIncrementedName(name string, i int) string {
-	ext := filepath.Ext(name)
-	nameWOExt := name[:len(name)-len(ext)]
-	nameWOInc := regexp.MustCompile(`-\d+$`).ReplaceAllString(nameWOExt, "")
-	// regular expression to match -1, -2, -3, etc
-	// if it matches, remove it
-	return nameWOInc + "-" + strconv.Itoa(i) + ext
-}
+var incrementPattern = regexp.MustCompile(`-\d+$`)
 
-// Compare two files byte by byte and return false as soon as they are different
-func IdenticalFiles(file1, file2 string) bool {
-	sf, err := os.Open(file1)
-	defer sf.Close()
+// findAvailableName returns an available filename by incrementing a counter
+func findAvailableName(baseName string) (string, error) {
+	ext := filepath.Ext(baseName)
+	nameWOExt := baseName[:len(baseName)-len(ext)]
+	nameWOInc := incrementPattern.ReplaceAllString(nameWOExt, "")
 
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	df, err := os.Open(file2)
-	defer df.Close()
-
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	sscan := bufio.NewScanner(sf)
-	dscan := bufio.NewScanner(df)
-
-	for sscan.Scan() {
-		dscan.Scan()
-		if !bytes.Equal(sscan.Bytes(), dscan.Bytes()) {
-			return false
+	for i := 1; i < MaxIncrementAttempts; i++ {
+		newName := fmt.Sprintf("%s-%d%s", nameWOInc, i, ext)
+		if !FileExists(newName) {
+			return newName, nil
 		}
 	}
 
-	return true
+	return "", ErrMaxAttemptsReached
 }
 
-// MoveFileCreatingPaths moves a file from src to dst, creating the destination path if it doesn't exist
-func MoveFileCreatingPaths(src, dst string) error {
-	err := CopyFileCreatingPaths(src, dst)
+// IdenticalFiles compares two files and returns true if they have identical content
+func IdenticalFiles(file1, file2 string) (bool, error) {
+	f1, err := os.Open(file1)
 	if err != nil {
-		return &ErrFailedCopyingFile{input: err, src: src, dst: dst}
+		return false, fmt.Errorf("opening first file: %w", err)
 	}
-	err = os.Remove(src)
-	if err != nil {
-		return &ErrFailedRemovingOriginal{input: err, file: src}
-	}
+	defer f1.Close()
 
-	return nil
+	f2, err := os.Open(file2)
+	if err != nil {
+		return false, fmt.Errorf("opening second file: %w", err)
+	}
+	defer f2.Close()
+
+	const chunkSize = DefaultBufferSize
+	b1 := make([]byte, chunkSize)
+	b2 := make([]byte, chunkSize)
+
+	for {
+		n1, err1 := f1.Read(b1)
+		n2, err2 := f2.Read(b2)
+
+		if n1 != n2 || !bytes.Equal(b1[:n1], b2[:n2]) {
+			return false, nil
+		}
+
+		if err1 == io.EOF && err2 == io.EOF {
+			return true, nil
+		}
+
+		if err1 != nil && err1 != io.EOF {
+			return false, fmt.Errorf("reading first file: %w", err1)
+		}
+		if err2 != nil && err2 != io.EOF {
+			return false, fmt.Errorf("reading second file: %w", err2)
+		}
+	}
 }
 
-// CopyFileCreatingPaths copies a file from src to dst, creating the destination path if it doesn't exist
-func CopyFileCreatingPaths(src, dst string) error {
-	err := os.MkdirAll(filepath.Dir(dst), 0755)
-	if err != nil {
-		return fmt.Errorf("failed creating destination path: %s", err)
+// CopyFileCreatingPaths copies a file from src to dst, creating the destination path if needed
+func CopyFileCreatingPaths(ctx context.Context, src, dst string) error {
+	if err := os.MkdirAll(filepath.Dir(dst), DefaultDirMode); err != nil {
+		return fmt.Errorf("creating destination directory: %w", err)
 	}
 
-	// move the file
-	err = CopyFile(src, dst)
-	if err != nil {
-		return &ErrFailedCopyingFile{input: err, src: src, dst: dst}
-	}
-
-	return nil
+	return CopyFile(ctx, src, dst)
 }
 
-// CopyFile copies a file from src to dst across filesystems
-func CopyFile(src, dst string) error {
-	in, err := os.Open(src)
+// CopyFile performs an efficient copy of a file from src to dst
+func CopyFile(ctx context.Context, src, dst string) error {
+	sourceFile, err := os.Open(src)
 	if err != nil {
-		return fmt.Errorf("couldn't open source file: %s", err)
+		return fmt.Errorf("opening source file: %w", err)
+	}
+	defer sourceFile.Close()
+
+	// Get source file info for permissions
+	sourceInfo, err := sourceFile.Stat()
+	if err != nil {
+		return fmt.Errorf("getting source file info: %w", err)
 	}
 
-	out, err := os.Create(dst)
+	// Create destination file with same permissions
+	destFile, err := os.OpenFile(dst, os.O_RDWR|os.O_CREATE|os.O_TRUNC, sourceInfo.Mode())
 	if err != nil {
-		in.Close()
-		return fmt.Errorf("couldn't open dest file: %s", err)
-	}
-	defer out.Close()
-
-	_, err = io.Copy(out, in)
-	in.Close()
-	if err != nil {
-		return fmt.Errorf("writing to output file failed: %s", err)
+		return fmt.Errorf("creating destination file: %w", err)
 	}
 
-	err = out.Sync()
-	if err != nil {
-		return fmt.Errorf("sync error: %s", err)
+	// Use buffered writer for better performance
+	writer := bufio.NewWriterSize(destFile, DefaultBufferSize)
+
+	// Copy the file
+	if _, err := io.Copy(writer, sourceFile); err != nil {
+		destFile.Close()
+		return fmt.Errorf("copying file content: %w", err)
 	}
 
-	si, err := os.Stat(src)
-	if err != nil {
-		return fmt.Errorf("stat error: %s", err)
-	}
-	err = os.Chmod(dst, si.Mode())
-	if err != nil {
-		return fmt.Errorf("chmod error: %s", err)
+	// Ensure all buffered data is written
+	if err := writer.Flush(); err != nil {
+		destFile.Close()
+		return fmt.Errorf("flushing writer: %w", err)
 	}
 
-	return nil
-}
-
-// MoveFile moves a file from src to dst even across filesystems
-func MoveFile(src, dst string) error {
-	err := CopyFile(src, dst)
-
-	if err != nil {
-		return &ErrFailedCopyingFile{src: src, dst: dst, input: err}
+	// Ensure file is properly written to disk
+	if err := destFile.Sync(); err != nil {
+		destFile.Close()
+		return fmt.Errorf("syncing file: %w", err)
 	}
 
-	err = os.Remove(src)
-
-	if err != nil {
-		return &ErrFailedRemovingOriginal{input: err, file: src}
+	if err := destFile.Close(); err != nil {
+		return fmt.Errorf("closing destination file: %w", err)
 	}
 
 	return nil
