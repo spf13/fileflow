@@ -31,46 +31,46 @@ var (
 
 // ErrFailedRemovingOriginal occurs when the original file cannot be removed
 type ErrFailedRemovingOriginal struct {
-	inner error
-	file  string
+	err  error
+	file string
 }
 
 func (e *ErrFailedRemovingOriginal) Error() string {
-	return fmt.Sprintf("failed removing original file %v: %v", e.file, e.inner)
+	return fmt.Sprintf("failed removing original file %v: %v", e.file, e.err)
 }
 
 func (e *ErrFailedRemovingOriginal) Unwrap() error {
-	return e.inner
+	return e.err
 }
 
 // ErrFailedCopyingFile occurs when a file copy operation fails
 type ErrFailedCopyingFile struct {
-	inner error
-	src   string
-	dst   string
+	err error
+	src string
+	dst string
 }
 
 func (e *ErrFailedCopyingFile) Error() string {
-	return fmt.Sprintf("failed copying file %v to %v: %v", e.src, e.dst, e.inner)
+	return fmt.Sprintf("failed copying file %v to %v: %v", e.src, e.dst, e.err)
 }
 
 func (e *ErrFailedCopyingFile) Unwrap() error {
-	return e.inner
+	return e.err
 }
 
 // ErrFailedMovingFile occurs when a file move operation fails
 type ErrFailedMovingFile struct {
-	inner error
-	src   string
-	dst   string
+	err error
+	src string
+	dst string
 }
 
 func (e *ErrFailedMovingFile) Error() string {
-	return fmt.Sprintf("failed moving file %v to %v: %v", e.src, e.dst, e.inner)
+	return fmt.Sprintf("failed moving file %v to %v: %v", e.src, e.dst, e.err)
 }
 
 func (e *ErrFailedMovingFile) Unwrap() error {
-	return e.inner
+	return e.err
 }
 
 // SafeMoveFileEfficient moves a file from src to dst efficiently, and returns the final destination.
@@ -108,7 +108,7 @@ func SafeRename(ctx context.Context, src, dst string) (string, error) {
 
 		if identical {
 			if err := os.Remove(src); err != nil {
-				return dst, &ErrFailedRemovingOriginal{inner: err, file: src}
+				return dst, &ErrFailedRemovingOriginal{err: err, file: src}
 			}
 			return dst, nil
 		}
@@ -125,7 +125,7 @@ func SafeRename(ctx context.Context, src, dst string) (string, error) {
 	}
 
 	if err := os.Rename(src, dst); err != nil {
-		return "", &ErrFailedMovingFile{inner: err, src: src, dst: dst}
+		return "", &ErrFailedMovingFile{err: err, src: src, dst: dst}
 	}
 
 	return dst, nil
@@ -146,7 +146,7 @@ func SafeMoveFile(ctx context.Context, src, dst string) (string, error) {
 
 		if identical {
 			if err := os.Remove(src); err != nil {
-				return dst, &ErrFailedRemovingOriginal{inner: err, file: src}
+				return dst, &ErrFailedRemovingOriginal{err: err, file: src}
 			}
 			return dst, nil
 		}
@@ -163,7 +163,7 @@ func SafeMoveFile(ctx context.Context, src, dst string) (string, error) {
 	}
 
 	if err := os.Remove(src); err != nil {
-		return dst, &ErrFailedRemovingOriginal{inner: err, file: src}
+		return dst, &ErrFailedRemovingOriginal{err: err, file: src}
 	}
 
 	return dst, nil
@@ -171,8 +171,8 @@ func SafeMoveFile(ctx context.Context, src, dst string) (string, error) {
 
 // FileExists returns true if the file exists and is accessible
 func FileExists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
 }
 
 var incrementPattern = regexp.MustCompile(`-\d+$`)
@@ -183,7 +183,7 @@ func findAvailableName(baseName string) (string, error) {
 	nameWOExt := baseName[:len(baseName)-len(ext)]
 	nameWOInc := incrementPattern.ReplaceAllString(nameWOExt, "")
 
-	for i := 1; i < MaxIncrementAttempts; i++ {
+	for i := 1; i <= MaxIncrementAttempts; i++ {
 		newName := fmt.Sprintf("%s-%d%s", nameWOInc, i, ext)
 		if !FileExists(newName) {
 			return newName, nil
@@ -195,6 +195,20 @@ func findAvailableName(baseName string) (string, error) {
 
 // IdenticalFiles compares two files and returns true if they have identical content
 func IdenticalFiles(file1, file2 string) (bool, error) {
+	f1Info, err := os.Stat(file1)
+	if err != nil {
+		return false, fmt.Errorf("stat file1: %w", err)
+	}
+	f2Info, err := os.Stat(file2)
+	if err != nil {
+		return false, fmt.Errorf("stat file2: %w", err)
+	}
+
+	// Quick check: if sizes differ, files are not identical
+	if f1Info.Size() != f2Info.Size() {
+		return false, nil
+	}
+
 	f1, err := os.Open(file1)
 	if err != nil {
 		return false, fmt.Errorf("opening first file: %w", err)
