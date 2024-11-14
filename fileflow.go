@@ -3,7 +3,6 @@ package fileflow
 import (
 	"bufio"
 	"bytes"
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -27,6 +26,7 @@ const (
 var (
 	ErrSameFile           = errors.New("source and destination are the same")
 	ErrMaxAttemptsReached = errors.New("maximum increment attempts reached")
+	ErrLockTimeout        = errors.New("timeout acquiring file lock")
 )
 
 // ErrFailedRemovingOriginal occurs when the original file cannot be removed
@@ -73,19 +73,19 @@ func (e *ErrFailedMovingFile) Unwrap() error {
 	return e.err
 }
 
-// SafeMoveFileEfficient moves a file from src to dst efficiently, and returns the final destination.
-// It first attempts to rename the file, falling back to copy+delete if the files are on different filesystems.
-func SafeMoveFileEfficient(ctx context.Context, src, dst string) (string, error) {
+// Move tries to move a file atomically using rename if possible,
+// falling back to copy+delete if files are on different filesystems.
+func Move(src, dst string) (string, error) {
 	if src == dst {
 		return "", ErrSameFile
 	}
 
-	final, err := SafeRename(ctx, src, dst)
+	final, err := Rename(src, dst)
 	if err != nil {
 		var linkErr *os.LinkError
 		if errors.As(err, &linkErr) && linkErr.Err == syscall.EXDEV {
 			// If the file is on a different drive, copy it instead
-			return SafeMoveFile(ctx, src, dst)
+			return fileMove(src, dst)
 		}
 		return "", err
 	}
@@ -93,15 +93,15 @@ func SafeMoveFileEfficient(ctx context.Context, src, dst string) (string, error)
 	return final, nil
 }
 
-// SafeRename attempts to rename a file from src to dst, handling naming conflicts.
+// Rename attempts to rename a file from src to dst, handling naming conflicts.
 // It returns the final destination path.
-func SafeRename(ctx context.Context, src, dst string) (string, error) {
+func Rename(src, dst string) (string, error) {
 	if src == dst {
 		return "", ErrSameFile
 	}
 
-	if FileExists(dst) {
-		identical, err := IdenticalFiles(src, dst)
+	if Exists(dst) {
+		identical, err := Equal(src, dst)
 		if err != nil {
 			return "", fmt.Errorf("checking file identity: %w", err)
 		}
@@ -131,15 +131,15 @@ func SafeRename(ctx context.Context, src, dst string) (string, error) {
 	return dst, nil
 }
 
-// SafeMoveFile moves a file from src to dst, handling naming conflicts.
+// fileMove moves a file from src to dst, handling naming conflicts.
 // It ensures that the dst file is not overwritten unless it is identical to the src file.
-func SafeMoveFile(ctx context.Context, src, dst string) (string, error) {
+func fileMove(src, dst string) (string, error) {
 	if src == dst {
 		return "", ErrSameFile
 	}
 
-	if FileExists(dst) {
-		identical, err := IdenticalFiles(src, dst)
+	if Exists(dst) {
+		identical, err := Equal(src, dst)
 		if err != nil {
 			return "", fmt.Errorf("checking file identity: %w", err)
 		}
@@ -158,7 +158,7 @@ func SafeMoveFile(ctx context.Context, src, dst string) (string, error) {
 		}
 	}
 
-	if err := CopyFileCreatingPaths(ctx, src, dst); err != nil {
+	if err := CopyWithPaths(src, dst); err != nil {
 		return "", err
 	}
 
@@ -169,8 +169,8 @@ func SafeMoveFile(ctx context.Context, src, dst string) (string, error) {
 	return dst, nil
 }
 
-// FileExists returns true if the file exists and is accessible
-func FileExists(path string) bool {
+// Exists returns true if the file exists and is accessible
+func Exists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && !info.IsDir()
 }
@@ -185,7 +185,7 @@ func findAvailableName(baseName string) (string, error) {
 
 	for i := 1; i <= MaxIncrementAttempts; i++ {
 		newName := fmt.Sprintf("%s-%d%s", nameWOInc, i, ext)
-		if !FileExists(newName) {
+		if !Exists(newName) {
 			return newName, nil
 		}
 	}
@@ -193,8 +193,8 @@ func findAvailableName(baseName string) (string, error) {
 	return "", ErrMaxAttemptsReached
 }
 
-// IdenticalFiles compares two files and returns true if they have identical content
-func IdenticalFiles(file1, file2 string) (bool, error) {
+// Equal compares two files and returns true if they have identical content
+func Equal(file1, file2 string) (bool, error) {
 	f1Info, err := os.Stat(file1)
 	if err != nil {
 		return false, fmt.Errorf("stat file1: %w", err)
@@ -246,17 +246,42 @@ func IdenticalFiles(file1, file2 string) (bool, error) {
 	}
 }
 
-// CopyFileCreatingPaths copies a file from src to dst, creating the destination path if needed
-func CopyFileCreatingPaths(ctx context.Context, src, dst string) error {
+// CopyWithPaths copies a file from src to dst, creating any necessary paths.
+// Returns the final destination path.
+func CopyWithPaths(src, dst string) error {
 	if err := os.MkdirAll(filepath.Dir(dst), DefaultDirMode); err != nil {
 		return fmt.Errorf("creating destination directory: %w", err)
 	}
 
-	return CopyFile(ctx, src, dst)
+	return Copy(src, dst)
 }
 
-// CopyFile performs an efficient copy of a file from src to dst
-func CopyFile(ctx context.Context, src, dst string) error {
+// Copy performs an efficient copy of a file from src to dst.
+// If the destination file exists and is identical, it returns early.
+// If the destination exists and is different, it finds an available name.
+func Copy(src, dst string) error {
+	if src == dst {
+		return ErrSameFile
+	}
+
+	if Exists(dst) {
+		identical, err := Equal(src, dst)
+		if err != nil {
+			return fmt.Errorf("checking file identity: %w", err)
+		}
+
+		if identical {
+			return nil // File already exists and is identical
+		}
+
+		// Find an available filename
+		newDst, err := findAvailableName(dst)
+		if err != nil {
+			return fmt.Errorf("finding available name: %w", err)
+		}
+		dst = newDst
+	}
+
 	sourceFile, err := os.Open(src)
 	if err != nil {
 		return fmt.Errorf("opening source file: %w", err)

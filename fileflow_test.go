@@ -2,7 +2,6 @@ package fileflow
 
 import (
 	"bytes"
-	"context"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -44,7 +43,7 @@ func TestIdenticalFiles(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		result, err := IdenticalFiles(tt.fileA, tt.fileB)
+		result, err := Equal(tt.fileA, tt.fileB)
 		if err != nil {
 			t.Errorf("IdenticalFiles(%q, %q) error: %v", tt.fileA, tt.fileB, err)
 			continue
@@ -55,9 +54,7 @@ func TestIdenticalFiles(t *testing.T) {
 	}
 }
 
-func TestCopyFile(t *testing.T) {
-	ctx := context.Background()
-
+func TestCopy(t *testing.T) {
 	// Create a temporary directory for test files
 	tempDir, err := ioutil.TempDir("", "test_copyfile")
 	if err != nil {
@@ -73,7 +70,7 @@ func TestCopyFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := CopyFile(ctx, srcPath, dstPath); err != nil {
+	if err := Copy(srcPath, dstPath); err != nil {
 		t.Fatalf("CopyFile() error: %v", err)
 	}
 
@@ -87,9 +84,7 @@ func TestCopyFile(t *testing.T) {
 	}
 }
 
-func TestSafeMoveFile(t *testing.T) {
-	ctx := context.Background()
-
+func TestMoveFile(t *testing.T) {
 	tempDir, err := ioutil.TempDir("", "test_safemove")
 	if err != nil {
 		t.Fatal(err)
@@ -104,7 +99,7 @@ func TestSafeMoveFile(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	finalDst, err := SafeMoveFile(ctx, srcPath, dstPath)
+	finalDst, err := Move(srcPath, dstPath)
 	if err != nil {
 		t.Fatalf("SafeMoveFile() error: %v", err)
 	}
@@ -127,7 +122,7 @@ func TestSafeMoveFile(t *testing.T) {
 	}
 }
 
-func TestFileExists(t *testing.T) {
+func TestExists(t *testing.T) {
 	tempDir, err := ioutil.TempDir("", "test_fileexists")
 	if err != nil {
 		t.Fatal(err)
@@ -150,16 +145,14 @@ func TestFileExists(t *testing.T) {
 	}
 
 	for _, tt := range tests {
-		result := FileExists(tt.file)
+		result := Exists(tt.file)
 		if result != tt.expected {
 			t.Errorf("FileExists(%q) = %v; want %v", tt.file, result, tt.expected)
 		}
 	}
 }
 
-func TestSafeMoveFileEfficient(t *testing.T) {
-	ctx := context.Background()
-
+func TestMove(t *testing.T) {
 	tempDir, err := ioutil.TempDir("", "test_safemoveefficient")
 	if err != nil {
 		t.Fatal(err)
@@ -174,7 +167,7 @@ func TestSafeMoveFileEfficient(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	finalDst, err := SafeMoveFileEfficient(ctx, srcPath, dstPath)
+	finalDst, err := Move(srcPath, dstPath)
 	if err != nil {
 		t.Fatalf("SafeMoveFileEfficient() error: %v", err)
 	}
