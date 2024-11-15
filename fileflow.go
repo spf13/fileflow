@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -15,8 +16,6 @@ import (
 const (
 	// DefaultBufferSize is the default buffer size used for file operations
 	DefaultBufferSize = 32 * 1024 // 32KB buffer
-	// MaxIncrementAttempts is the maximum number of attempts to increment a filename
-	MaxIncrementAttempts = 100
 	// DefaultFileMode is the default permission mode for new files
 	DefaultFileMode = 0644
 	// DefaultDirMode is the default permission mode for new directories
@@ -27,6 +26,11 @@ var (
 	ErrSameFile           = errors.New("source and destination are the same")
 	ErrMaxAttemptsReached = errors.New("maximum increment attempts reached")
 	ErrLockTimeout        = errors.New("timeout acquiring file lock")
+	// MaxIncrementAttempts is the maximum number of attempts to increment a filename
+	MaxIncrementAttempts             = 100               // user can override this value
+	BufferSize                       = DefaultBufferSize // user can override this value
+	FileMode             fs.FileMode = DefaultFileMode   // user can override this value
+	DirMode              fs.FileMode = DefaultDirMode    // user can override this value
 )
 
 // ErrFailedRemovingOriginal occurs when the original file cannot be removed
@@ -221,9 +225,8 @@ func Equal(file1, file2 string) (bool, error) {
 	}
 	defer f2.Close()
 
-	const chunkSize = DefaultBufferSize
-	b1 := make([]byte, chunkSize)
-	b2 := make([]byte, chunkSize)
+	b1 := make([]byte, BufferSize)
+	b2 := make([]byte, BufferSize)
 
 	for {
 		n1, err1 := f1.Read(b1)
@@ -249,7 +252,7 @@ func Equal(file1, file2 string) (bool, error) {
 // CopyWithPaths copies a file from src to dst, creating any necessary paths.
 // Returns the final destination path.
 func CopyWithPaths(src, dst string) error {
-	if err := os.MkdirAll(filepath.Dir(dst), DefaultDirMode); err != nil {
+	if err := os.MkdirAll(filepath.Dir(dst), DirMode); err != nil {
 		return fmt.Errorf("creating destination directory: %w", err)
 	}
 
@@ -301,7 +304,7 @@ func Copy(src, dst string) error {
 	}
 
 	// Use buffered writer for better performance
-	writer := bufio.NewWriterSize(destFile, DefaultBufferSize)
+	writer := bufio.NewWriterSize(destFile, BufferSize)
 
 	// Copy the file
 	if _, err := io.Copy(writer, sourceFile); err != nil {
