@@ -32,12 +32,12 @@ var (
 	BufferSize                       = DefaultBufferSize // user can override this value
 	FileMode             fs.FileMode = DefaultFileMode   // user can override this value
 	DirMode              fs.FileMode = DefaultDirMode    // user can override this value
+
 	// FindAvailableName is the function used to find an available filename
 	// The default behavior is to increment the filename
 	// User can override this behavior by setting this variable to a custom
 	// function or the provided FindAvailableNameTS which instead of
 	// incrementing adds a timestamp
-
 	FindAvailableName func(string) (string, error) = FindAvailableNameInc
 )
 

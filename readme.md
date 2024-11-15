@@ -7,7 +7,8 @@ The `fileflow` package provides a robust set of utilities to safely move, copy, 
 - **Safe File Move**: Moves files between paths, with support for cross-filesystem transfers.
 - **Unique Destination Naming**: If the destination file already exists, appends incrementing suffixes (`-1`, `-2`, etc.) to avoid overwriting non-identical files.
 - **Identical File Check**: Compares files to determine if they are identical, preventing unnecessary overwrites.
-- **Path Creation**: Automatically creates directories for destination paths if they don’t exist.
+- **Path Creation**: Automatically creates directories for destination paths if they don't exist.
+- **Customizable Naming Strategy**: Flexible naming strategy for handling file conflicts through customizable functions.
 
 ## Installation
 Simply include the package in your Go project:
@@ -59,6 +60,43 @@ if identical {
 }
 ```
 
+### FindAvailableName
+The package provides flexible naming strategies for handling file conflicts through the `FindAvailableName` variable. This variable holds a function that determines how to generate alternative filenames when a conflict occurs. The package includes two built-in implementations:
+
+#### FindAvailableNameInc (Default)
+The default implementation that appends incrementing numbers to filenames:
+- For a file "document.txt", generates: "document-1.txt", "document-2.txt", etc.
+
+#### FindAvailableNameTS
+An alternative implementation that appends timestamps to filenames:
+- For a file "document.txt", generates: "document-20230615-143022.123456789.txt"
+
+You can customize the naming strategy by providing your own implementation:
+
+```go
+// Example of a custom naming strategy that adds a random suffix
+func customNamingStrategy(baseName string) (string, error) {
+    ext := filepath.Ext(baseName)
+    nameWOExt := baseName[:len(baseName)-len(ext)]
+    
+    // Generate a random 6-character string
+    const charset = "abcdefghijklmnopqrstuvwxyz0123456789"
+    suffix := make([]byte, 6)
+    for i := range suffix {
+        suffix[i] = charset[rand.Intn(len(charset))]
+    }
+    
+    newName := fmt.Sprintf("%s-%s%s", nameWOExt, string(suffix), ext)
+    if !fileflow.Exists(newName) {
+        return newName, nil
+    }
+    return "", fileflow.ErrMaxAttemptsReached
+}
+
+// Set the custom strategy
+fileflow.FindAvailableName = customNamingStrategy
+```
+
 ## Error Handling
 The package includes custom error types to provide detailed error information:
 
@@ -94,4 +132,3 @@ func main() {
 
 ## License
 This package is open-source and available under the MIT License.
-
