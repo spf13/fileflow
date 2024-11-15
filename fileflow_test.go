@@ -5,6 +5,7 @@ import (
 	"io/ioutil"
 	"os"
 	"path/filepath"
+	"regexp"
 	"testing"
 )
 
@@ -187,5 +188,157 @@ func TestMove(t *testing.T) {
 
 	if !bytes.Equal(content, dstContent) {
 		t.Errorf("Destination file content = %s; want %s", dstContent, content)
+	}
+}
+
+func TestCustomFindAvailableName(t *testing.T) {
+	tempDir, err := ioutil.TempDir("", "test_customfindavailablename")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	baseName := filepath.Join(tempDir, "testfile.txt")
+
+	// Create a file to ensure the name needs to be incremented
+	if err := ioutil.WriteFile(baseName, []byte("Hello World"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Define a custom function for finding available names
+	customFindAvailableName := func(baseName string) (string, error) {
+		return baseName + "_custom", nil
+	}
+
+	// Set the custom function
+	FindAvailableName = customFindAvailableName
+
+	newName, err := FindAvailableName(baseName)
+	if err != nil {
+		t.Fatalf("CustomFindAvailableName() error: %v", err)
+	}
+
+	expectedName := baseName + "_custom"
+	if newName != expectedName {
+		t.Errorf("CustomFindAvailableName() = %v; want %v", newName, expectedName)
+	}
+
+	// Reset FindAvailableName to default
+	FindAvailableName = FindAvailableNameInc
+}
+
+func TestFindAvailableNameInc(t *testing.T) {
+	tempDir, err := ioutil.TempDir("", "test_findavailablenameinc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	baseName := filepath.Join(tempDir, "testfile.txt")
+
+	// Create a file to ensure the name needs to be incremented
+	if err := ioutil.WriteFile(baseName, []byte("Hello World"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	newName, err := FindAvailableNameInc(baseName)
+	if err != nil {
+		t.Fatalf("FindAvailableNameInc() error: %v", err)
+	}
+
+	expectedName := baseName[:len(baseName)-4] + "-1.txt"
+	if newName != expectedName {
+		t.Errorf("FindAvailableNameInc() = %v; want %v", newName, expectedName)
+	}
+
+	// Create -1 file and test -2
+	if err := ioutil.WriteFile(newName, []byte("Hello World"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	newName2, err := FindAvailableNameInc(baseName)
+	if err != nil {
+		t.Fatalf("FindAvailableNameInc() second call error: %v", err)
+	}
+
+	expectedName2 := baseName[:len(baseName)-4] + "-2.txt"
+	if newName2 != expectedName2 {
+		t.Errorf("FindAvailableNameInc() second call = %v; want %v", newName2, expectedName2)
+	}
+
+	// Test file without extension
+	baseNameNoExt := filepath.Join(tempDir, "testfile")
+	if err := ioutil.WriteFile(baseNameNoExt, []byte("Hello World"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	newName3, err := FindAvailableNameInc(baseNameNoExt)
+	if err != nil {
+		t.Fatalf("FindAvailableNameInc() no extension error: %v", err)
+	}
+
+	expectedName3 := baseNameNoExt + "-1"
+	if newName3 != expectedName3 {
+		t.Errorf("FindAvailableNameInc() no extension = %v; want %v", newName3, expectedName3)
+	}
+}
+
+func TestFindAvailableNameTS(t *testing.T) {
+	tempDir, err := ioutil.TempDir("", "test_findavailablenamets")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	baseName := filepath.Join(tempDir, "testfile.txt")
+
+	// Create initial file
+	if err := ioutil.WriteFile(baseName, []byte("Hello World"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Test timestamp suffix format
+	newName, err := FindAvailableNameTS(baseName)
+	if err != nil {
+		t.Fatalf("FindAvailableNameTS() error: %v", err)
+	}
+
+	// Check that name follows pattern: basename-YYYYMMDD-hhmmss-.ext
+	tsPattern := regexp.MustCompile(`-\d{8}-\d{6}\.\d{9}\.txt$`)
+	if !tsPattern.MatchString(newName) {
+		t.Errorf("FindAvailableNameTS() = %v; want timestamp suffix matching pattern %v",
+			newName, tsPattern)
+	}
+
+	// Create file with first timestamp and test second timestamp
+	if err := ioutil.WriteFile(newName, []byte("Hello World"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	newName2, err := FindAvailableNameTS(baseName)
+	if err != nil {
+		t.Fatalf("FindAvailableNameTS() second call error: %v, firstname: %v", err, newName)
+	}
+
+	// Verify increment part is 2
+	if !tsPattern.MatchString(newName2) {
+		t.Errorf("FindAvailableNameTS() = %v; want timestamp suffix matching patterh %v", newName2, tsPattern)
+	}
+
+	// Test file without extension
+	baseNameNoExt := filepath.Join(tempDir, "testfile")
+	if err := ioutil.WriteFile(baseNameNoExt, []byte("Hello World"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	newName3, err := FindAvailableNameTS(baseNameNoExt)
+	if err != nil {
+		t.Fatalf("FindAvailableNameTS() no extension error: %v", err)
+	}
+
+	// Check timestamp suffix without extension
+	tsPatternNoExt := regexp.MustCompile(`-\d{8}-\d{6}\.\d{9}$`)
+	if !tsPatternNoExt.MatchString(newName3) {
+		t.Errorf("FindAvailableNameTS() = %v; want timestamp suffix without extension", newName3)
 	}
 }

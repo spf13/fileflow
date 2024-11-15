@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"syscall"
+	"time"
 )
 
 const (
@@ -31,6 +32,13 @@ var (
 	BufferSize                       = DefaultBufferSize // user can override this value
 	FileMode             fs.FileMode = DefaultFileMode   // user can override this value
 	DirMode              fs.FileMode = DefaultDirMode    // user can override this value
+	// FindAvailableName is the function used to find an available filename
+	// The default behavior is to increment the filename
+	// User can override this behavior by setting this variable to a custom
+	// function or the provided FindAvailableNameTS which instead of
+	// incrementing adds a timestamp
+
+	FindAvailableName func(string) (string, error) = FindAvailableNameInc
 )
 
 // ErrFailedRemovingOriginal occurs when the original file cannot be removed
@@ -118,7 +126,7 @@ func Rename(src, dst string) (string, error) {
 		}
 
 		// Find an available filename
-		dst, err = findAvailableName(dst)
+		dst, err = FindAvailableName(dst)
 		if err != nil {
 			return "", fmt.Errorf("finding available name: %w", err)
 		}
@@ -156,7 +164,7 @@ func fileMove(src, dst string) (string, error) {
 		}
 
 		// Find an available filename
-		dst, err = findAvailableName(dst)
+		dst, err = FindAvailableName(dst)
 		if err != nil {
 			return "", fmt.Errorf("finding available name: %w", err)
 		}
@@ -181,14 +189,29 @@ func Exists(path string) bool {
 
 var incrementPattern = regexp.MustCompile(`-\d+$`)
 
-// findAvailableName returns an available filename by incrementing a counter
-func findAvailableName(baseName string) (string, error) {
+// FindAvailableNameInc returns an available filename by incrementing a counter
+func FindAvailableNameInc(baseName string) (string, error) {
 	ext := filepath.Ext(baseName)
 	nameWOExt := baseName[:len(baseName)-len(ext)]
 	nameWOInc := incrementPattern.ReplaceAllString(nameWOExt, "")
 
 	for i := 1; i <= MaxIncrementAttempts; i++ {
 		newName := fmt.Sprintf("%s-%d%s", nameWOInc, i, ext)
+		if !Exists(newName) {
+			return newName, nil
+		}
+	}
+
+	return "", ErrMaxAttemptsReached
+}
+
+func FindAvailableNameTS(baseName string) (string, error) {
+	ext := filepath.Ext(baseName)
+	nameWOExt := baseName[:len(baseName)-len(ext)]
+	nameWOInc := incrementPattern.ReplaceAllString(nameWOExt, "")
+
+	for i := 1; i <= MaxIncrementAttempts; i++ {
+		newName := fmt.Sprintf("%s-%s%s", nameWOInc, time.Now().Format("20060102-150405.000000000"), ext)
 		if !Exists(newName) {
 			return newName, nil
 		}
@@ -278,7 +301,7 @@ func Copy(src, dst string) error {
 		}
 
 		// Find an available filename
-		newDst, err := findAvailableName(dst)
+		newDst, err := FindAvailableName(dst)
 		if err != nil {
 			return fmt.Errorf("finding available name: %w", err)
 		}
