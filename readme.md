@@ -131,4 +131,4 @@ func main() {
 ```
 
 ## License
-This package is open-source and available under the MIT License.
+This package is open-source and available under the Apache 2.0 License.
