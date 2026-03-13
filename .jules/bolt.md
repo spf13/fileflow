@@ -1,0 +1,3 @@
+## 2024-05-24 - Go io.Copy optimization
+**Learning:** In Go, wrapping an `*os.File` destination in `bufio.Writer` before calling `io.Copy(writer, sourceFile)` actually prevents the standard library from utilizing kernel-level zero-copy optimizations like `copy_file_range` or `sendfile`. Without the wrapper, `io.Copy` falls back to `destFile.ReadFrom(sourceFile)`, which handles the data transfer entirely in kernel space, offering significant performance improvements and lower CPU overhead for large files.
+**Action:** When copying data between two OS files in Go, always pass the raw `*os.File` objects directly to `io.Copy` rather than using an intermediate userspace buffer like `bufio`.
