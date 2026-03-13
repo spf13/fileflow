@@ -357,3 +357,37 @@ func TestFindAvailableNameTS(t *testing.T) {
 		t.Errorf("FindAvailableNameTS() = %v; want timestamp suffix without extension", newName3)
 	}
 }
+
+func TestSymlinkVulnerability(t *testing.T) {
+	tempDir, err := ioutil.TempDir("", "test_symlink_vuln")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	srcPath := filepath.Join(tempDir, "source.txt")
+	dstPath := filepath.Join(tempDir, "dest.txt")
+	secretPath := filepath.Join(tempDir, "secret.txt")
+	content := []byte("Malicious Content")
+
+	// Create a source file
+	if err := ioutil.WriteFile(srcPath, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Create a broken symlink from dest.txt to secret.txt
+	if err := os.Symlink(secretPath, dstPath); err != nil {
+		t.Fatal(err)
+	}
+
+	// Try to copy the file to the broken symlink
+	err = Copy(srcPath, dstPath)
+	if err == nil {
+		t.Fatal("Copy() should have failed when trying to overwrite a broken symlink")
+	}
+
+	// Verify that secret.txt was not created
+	if _, err := os.Stat(secretPath); !os.IsNotExist(err) {
+		t.Fatal("Copy() followed the broken symlink and created the target file!")
+	}
+}
