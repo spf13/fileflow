@@ -336,7 +336,10 @@ func Copy(src, dst string) error {
 	}
 
 	// Create destination file with same permissions
-	destFile, err := os.OpenFile(dst, os.O_RDWR|os.O_CREATE|os.O_TRUNC, sourceInfo.Mode())
+	// Security note: Using O_EXCL instead of O_TRUNC to prevent TOCTOU race condition
+	// where an attacker could create a symlink at the destination path between the
+	// Exists check and this OpenFile call.
+	destFile, err := os.OpenFile(dst, os.O_RDWR|os.O_CREATE|os.O_EXCL, sourceInfo.Mode())
 	if err != nil {
 		return fmt.Errorf("creating destination file: %w", err)
 	}
