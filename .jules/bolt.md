@@ -1,0 +1,3 @@
+## 2024-03-14 - Replace regexp string suffix matching with strings package
+**Learning:** `regexp.MustCompile("-\\d+$")` and `ReplaceAllString` are significantly slower and allocate much more memory than a simple byte-wise string loop searching from the end with `strings.LastIndexByte` for simple suffix stripping.
+**Action:** Use standard library `strings` functions for simple string manipulation instead of the `regexp` package in performance-critical paths, especially in tight loops like incrementing a filename until an available one is found. Also replace `fmt.Sprintf` with string concatenation and `strconv.Itoa` to reduce memory allocations.

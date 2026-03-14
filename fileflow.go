@@ -24,7 +24,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"regexp"
+	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -202,16 +203,28 @@ func Exists(path string) bool {
 	return err == nil && !info.IsDir()
 }
 
-var incrementPattern = regexp.MustCompile(`-\d+$`)
-
 // FindAvailableNameInc returns an available filename by incrementing a counter
 func FindAvailableNameInc(baseName string) (string, error) {
 	ext := filepath.Ext(baseName)
 	nameWOExt := baseName[:len(baseName)-len(ext)]
-	nameWOInc := incrementPattern.ReplaceAllString(nameWOExt, "")
+
+	// Fast path for stripping -\d+ at the end of nameWOExt
+	lastDash := strings.LastIndexByte(nameWOExt, '-')
+	if lastDash != -1 && lastDash < len(nameWOExt)-1 {
+		isNum := true
+		for i := lastDash + 1; i < len(nameWOExt); i++ {
+			if nameWOExt[i] < '0' || nameWOExt[i] > '9' {
+				isNum = false
+				break
+			}
+		}
+		if isNum {
+			nameWOExt = nameWOExt[:lastDash]
+		}
+	}
 
 	for i := 1; i <= MaxIncrementAttempts; i++ {
-		newName := fmt.Sprintf("%s-%d%s", nameWOInc, i, ext)
+		newName := nameWOExt + "-" + strconv.Itoa(i) + ext
 		if !Exists(newName) {
 			return newName, nil
 		}
@@ -223,10 +236,24 @@ func FindAvailableNameInc(baseName string) (string, error) {
 func FindAvailableNameTS(baseName string) (string, error) {
 	ext := filepath.Ext(baseName)
 	nameWOExt := baseName[:len(baseName)-len(ext)]
-	nameWOInc := incrementPattern.ReplaceAllString(nameWOExt, "")
+
+	// Fast path for stripping -\d+ at the end of nameWOExt
+	lastDash := strings.LastIndexByte(nameWOExt, '-')
+	if lastDash != -1 && lastDash < len(nameWOExt)-1 {
+		isNum := true
+		for i := lastDash + 1; i < len(nameWOExt); i++ {
+			if nameWOExt[i] < '0' || nameWOExt[i] > '9' {
+				isNum = false
+				break
+			}
+		}
+		if isNum {
+			nameWOExt = nameWOExt[:lastDash]
+		}
+	}
 
 	for i := 1; i <= MaxIncrementAttempts; i++ {
-		newName := fmt.Sprintf("%s-%s%s", nameWOInc, time.Now().Format("20060102-150405.000000000"), ext)
+		newName := nameWOExt + "-" + time.Now().Format("20060102-150405.000000000") + ext
 		if !Exists(newName) {
 			return newName, nil
 		}
