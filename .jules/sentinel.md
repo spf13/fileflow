@@ -1,0 +1,4 @@
+## 2024-03-16 - TOCTOU Race Condition in File Copy
+**Vulnerability:** Time-of-Check to Time-of-Use (TOCTOU) race condition in `Copy` function. The code checked if a file existed with `Exists(dst)`, and if it didn't (or after finding an available name), it called `os.OpenFile` with `os.O_TRUNC`. If another process created the file in between the check and the open call, it would be silently truncated and overwritten.
+**Learning:** Even with robust filename conflict resolution (like appending numbers or timestamps), if the actual file creation isn't atomic with the existence check, there's a window for data loss via race conditions.
+**Prevention:** Always use `os.O_EXCL` in conjunction with `os.O_CREATE` when you intend to create a new file and expect it not to exist. This enforces at the OS level that the file creation will fail if the file already exists, closing the TOCTOU window.

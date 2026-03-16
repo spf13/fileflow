@@ -336,7 +336,10 @@ func Copy(src, dst string) error {
 	}
 
 	// Create destination file with same permissions
-	destFile, err := os.OpenFile(dst, os.O_RDWR|os.O_CREATE|os.O_TRUNC, sourceInfo.Mode())
+	// O_EXCL is used instead of O_TRUNC to prevent a TOCTOU (Time-of-Check to Time-of-Use)
+	// race condition where another process could create the file between our Exists()
+	// check and this OpenFile call, which would otherwise result in overwriting it.
+	destFile, err := os.OpenFile(dst, os.O_RDWR|os.O_CREATE|os.O_EXCL, sourceInfo.Mode())
 	if err != nil {
 		return fmt.Errorf("creating destination file: %w", err)
 	}
