@@ -17,6 +17,7 @@ package fileflow
 
 import (
 	"bytes"
+	"fmt"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -355,5 +356,29 @@ func TestFindAvailableNameTS(t *testing.T) {
 	tsPatternNoExt := regexp.MustCompile(`-\d{8}-\d{6}\.\d{9}$`)
 	if !tsPatternNoExt.MatchString(newName3) {
 		t.Errorf("FindAvailableNameTS() = %v; want timestamp suffix without extension", newName3)
+	}
+}
+
+func BenchmarkCopy(b *testing.B) {
+	tempDir, err := ioutil.TempDir("", "bench_copy")
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	srcPath := filepath.Join(tempDir, "source.txt")
+
+	// Create a 1MB file
+	content := make([]byte, 1024*1024)
+	if err := ioutil.WriteFile(srcPath, content, 0644); err != nil {
+		b.Fatal(err)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		dst := filepath.Join(tempDir, fmt.Sprintf("dest_%d.txt", i))
+		if err := Copy(srcPath, dst); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
