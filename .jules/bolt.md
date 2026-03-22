@@ -1,0 +1,3 @@
+## 2024-05-24 - Zero-Copy File Optimization
+**Learning:** Wrapping a standard `*os.File` in a `bufio.Writer` before calling `io.Copy` disables zero-copy system calls like `copy_file_range` or `sendfile`. While buffering often seems like a good idea for IO, in the specific case of copying between two OS files, letting `io.Copy` operate directly on the file descriptors leverages kernel-level optimization, making copies significantly faster and drastically reducing memory allocations.
+**Action:** When using `io.Copy` between two `*os.File` instances, avoid wrapping them in `bufio` readers/writers. Let standard library use optimized paths.
