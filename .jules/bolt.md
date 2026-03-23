@@ -1,0 +1,3 @@
+## 2024-03-23 - Avoid wrapping *os.File with bufio.Writer in io.Copy
+**Learning:** In this codebase, avoiding `bufio.Writer` wrappers for `io.Copy` when directly interacting with `*os.File` objects allows `io.Copy` to utilize zero-copy system calls (`sendfile` or `copy_file_range`). This significantly improves file copy performance and reduces unnecessary allocations.
+**Action:** When working with file I/O operations involving `io.Copy` in Go, prefer using standard `*os.File` objects directly as `io.Writer` sources and destinations to take advantage of zero-copy benefits unless explicitly handling specific non-file I/O scenarios.
