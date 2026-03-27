@@ -1,0 +1,3 @@
+## 2024-06-18 - File Copy Performance & Zero-Copy Optimization
+**Learning:** Wrapping `*os.File` instances in `bufio.Writer` or `bufio.Reader` when performing file copies using `io.Copy` in Go actually prevents zero-copy optimizations (like `sendfile` or `copy_file_range` syscalls) because the `bufio` wrappers don't implement `io.ReaderFrom` or `io.WriterTo` that the stdlib uses to bypass user-space copying.
+**Action:** When working with direct file-to-file copies in Go (`os.File` to `os.File`), use `io.Copy(dst, src)` directly without any `bufio` wrappers. Let the operating system handle the buffering and transfer at the kernel level.
