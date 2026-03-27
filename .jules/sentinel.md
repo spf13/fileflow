@@ -1,0 +1,4 @@
+## 2024-03-27 - Fix TOCTOU vulnerability in file copying
+**Vulnerability:** A Time-of-Check to Time-of-Use (TOCTOU) vulnerability existed in `fileflow.go` when copying a file. It checked if a destination file exists, found an available name if it did, but then used `os.OpenFile` with `os.O_TRUNC` to create or overwrite it. Between the check and the actual opening, an attacker could create a symlink to another file at the destination path, causing the copy operation to overwrite arbitrary files.
+**Learning:** `os.O_TRUNC` does not prevent overwriting existing files or following symlinks, even if an existence check was performed right before.
+**Prevention:** In this codebase, to prevent TOCTOU symlink vulnerabilities, always use `os.O_EXCL` in conjunction with `os.O_CREATE` when opening or creating files after an existence check. This ensures that the open operation will fail atomically if the file (or a symlink) was created by another process in the interim.
