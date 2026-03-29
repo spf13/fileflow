@@ -1,0 +1,4 @@
+## 2024-05-24 - [TOCTOU Vulnerability in File Creation]
+**Vulnerability:** Time-of-Check to Time-of-Use (TOCTOU) vulnerability where `os.O_TRUNC` is used with `os.O_CREATE` after checking for file existence. This could allow an attacker to create a symlink in the split second between the check and creation, potentially leading to arbitrary file overwrite.
+**Learning:** Using `os.O_EXCL` with `os.O_CREATE` is crucial in file creation operations to ensure atomicity, particularly when a preceding existence check is performed. It prevents race conditions and symlink attacks.
+**Prevention:** Always use `os.O_EXCL` alongside `os.O_CREATE` when creating a file after determining it does not or should not exist, ensuring the file creation fails safely if the file suddenly appears (e.g., as a malicious symlink).
