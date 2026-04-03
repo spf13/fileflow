@@ -1,0 +1,3 @@
+## 2024-04-03 - Avoid User-Space Buffers for File Copies
+**Learning:** Wrapping `*os.File` in `bufio.Writer` during `io.Copy` disables zero-copy system calls (`sendfile`, `copy_file_range`) and causes all data to bounce through user-space memory, severely degrading file copy performance and memory efficiency.
+**Action:** Do not wrap standard files (`*os.File`) in `bufio.Writer` when using `io.Copy`.
