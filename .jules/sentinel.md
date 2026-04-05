@@ -1,0 +1,4 @@
+## 2024-04-05 - TOCTOU Vulnerability in File Creation
+**Vulnerability:** The `fileflow` package performs an existence check before creating files, but uses `os.O_CREATE` without `os.O_EXCL` in `os.OpenFile`. This introduces a Time-of-Check to Time-of-Use (TOCTOU) vulnerability where an attacker could create a symlink at the destination path between the check and the open call, causing the application to overwrite an arbitrary file.
+**Learning:** Checking for file existence before creation does not guarantee the file won't exist by the time of creation. This is a common pattern in Go file handling that needs careful review.
+**Prevention:** Always use `os.O_EXCL` in conjunction with `os.O_CREATE` when opening or creating files after an existence check to ensure atomic creation and prevent symlink attacks.
