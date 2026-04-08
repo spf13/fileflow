@@ -1,0 +1,3 @@
+## 2024-04-08 - Avoid wrapping os.File in bufio.Writer for io.Copy
+**Learning:** Wrapping a standard file (`*os.File`) in `bufio.Writer` when using `io.Copy` disables zero-copy system calls (`sendfile`, `copy_file_range`) and degrades file copy performance.
+**Action:** When copying files in Go using `io.Copy`, do not wrap the destination `*os.File` in a `bufio.Writer` to allow the kernel to perform zero-copy optimizations.
