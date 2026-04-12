@@ -357,3 +357,26 @@ func TestFindAvailableNameTS(t *testing.T) {
 		t.Errorf("FindAvailableNameTS() = %v; want timestamp suffix without extension", newName3)
 	}
 }
+
+func BenchmarkCopy(b *testing.B) {
+	// Create a temporary file to copy
+	dir := b.TempDir()
+	src := filepath.Join(dir, "source.bin")
+	dst := filepath.Join(dir, "dest.bin")
+
+	// Create a 1MB file
+	data := make([]byte, 1024*1024)
+	if err := os.WriteFile(src, data, 0644); err != nil {
+		b.Fatal(err)
+	}
+
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		// Ensure destination doesn't exist
+		os.Remove(dst)
+
+		if err := Copy(src, dst); err != nil {
+			b.Fatal(err)
+		}
+	}
+}
