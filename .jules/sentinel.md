@@ -1,0 +1,4 @@
+## 2024-04-12 - TOCTOU Symlink Vulnerability in File Creation
+**Vulnerability:** The `Copy` function opens the destination file using `os.O_CREATE` without `os.O_EXCL` after an existence check, which introduces a Time-of-Check to Time-of-Use (TOCTOU) vulnerability where an attacker could create a symlink in the interim, causing the copy operation to overwrite an unintended file.
+**Learning:** Even when verifying file existence and generating new non-existent filenames, a race window exists before the actual file creation. Using `os.O_CREATE` alone will follow newly created symlinks.
+**Prevention:** Always use `os.O_EXCL` in conjunction with `os.O_CREATE` when opening or creating files after an existence check to ensure the file is newly created and fails securely if a file or symlink was created during the race window.
