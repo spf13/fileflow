@@ -1,0 +1,4 @@
+## 2024-04-13 - TOCTOU Symlink Vulnerability in File Creation
+**Vulnerability:** The `Copy` function in `fileflow.go` (line 303) performs an existence check (`Exists(dst)`) and then creates the file using `os.OpenFile` (line 339) with `os.O_CREATE|os.O_TRUNC`. This creates a Time-of-Check to Time-of-Use (TOCTOU) vulnerability where an attacker could place a symlink at the destination path between the check and file creation, causing the program to overwrite an arbitrary file.
+**Learning:** Always use `os.O_EXCL` with `os.O_CREATE` after an existence check to ensure the file operation is atomic and fails if a file or symlink was created in the interim.
+**Prevention:** Use `os.O_RDWR|os.O_CREATE|os.O_EXCL` when creating files that have just been verified as non-existent to guarantee atomic file creation.
