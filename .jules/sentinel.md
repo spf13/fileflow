@@ -1,0 +1,4 @@
+## 2024-04-16 - TOCTOU Symlink Vulnerability in File Creation
+**Vulnerability:** The `os.OpenFile` call in the `Copy` function uses `os.O_CREATE|os.O_TRUNC` without `os.O_EXCL` after an existence check, creating a Time-of-Check to Time-of-Use (TOCTOU) race condition. An attacker could place a symlink at the destination path between the check and the file creation, causing the application to truncate and write to arbitrary files.
+**Learning:** In Go, checking for file existence before creation is not enough to prevent overwriting files via symlinks due to the race window.
+**Prevention:** Always use `os.O_EXCL` in conjunction with `os.O_CREATE` when opening or creating files after verifying they should not exist. This ensures the filesystem atomically enforces exclusive creation, mitigating symlink attacks.
