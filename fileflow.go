@@ -335,10 +335,17 @@ func Copy(src, dst string) error {
 		return fmt.Errorf("getting source file info: %w", err)
 	}
 
-	// Create destination file with same permissions
-	destFile, err := os.OpenFile(dst, os.O_RDWR|os.O_CREATE|os.O_TRUNC, sourceInfo.Mode())
+	// Security: Prevent TOCTOU symlink vulnerabilities by writing to a unique temporary file first
+	destFile, err := os.CreateTemp(filepath.Dir(dst), filepath.Base(dst)+".*.tmp")
 	if err != nil {
 		return fmt.Errorf("creating destination file: %w", err)
+	}
+	tempDst := destFile.Name()
+	// Apply source permissions to the temp file
+	if err := destFile.Chmod(sourceInfo.Mode()); err != nil {
+		destFile.Close()
+		os.Remove(tempDst)
+		return fmt.Errorf("chmod destination file: %w", err)
 	}
 
 	// Use buffered writer for better performance
@@ -347,23 +354,33 @@ func Copy(src, dst string) error {
 	// Copy the file
 	if _, err := io.Copy(writer, sourceFile); err != nil {
 		destFile.Close()
+		os.Remove(tempDst)
 		return fmt.Errorf("copying file content: %w", err)
 	}
 
 	// Ensure all buffered data is written
 	if err := writer.Flush(); err != nil {
 		destFile.Close()
+		os.Remove(tempDst)
 		return fmt.Errorf("flushing writer: %w", err)
 	}
 
 	// Ensure file is properly written to disk
 	if err := destFile.Sync(); err != nil {
 		destFile.Close()
+		os.Remove(tempDst)
 		return fmt.Errorf("syncing file: %w", err)
 	}
 
 	if err := destFile.Close(); err != nil {
+		os.Remove(tempDst)
 		return fmt.Errorf("closing destination file: %w", err)
+	}
+
+	// Atomically move the temp file to the final destination
+	if err := os.Rename(tempDst, dst); err != nil {
+		os.Remove(tempDst)
+		return fmt.Errorf("renaming temporary file to destination: %w", err)
 	}
 
 	return nil
