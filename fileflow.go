@@ -335,10 +335,17 @@ func Copy(src, dst string) error {
 		return fmt.Errorf("getting source file info: %w", err)
 	}
 
-	// Create destination file with same permissions
-	destFile, err := os.OpenFile(dst, os.O_RDWR|os.O_CREATE|os.O_TRUNC, sourceInfo.Mode())
+	// 🛡️ Sentinel: Prevent TOCTOU symlink vulnerabilities by using an atomic write pattern
+	destFile, err := os.CreateTemp(filepath.Dir(dst), "fileflow-*.tmp")
 	if err != nil {
-		return fmt.Errorf("creating destination file: %w", err)
+		return fmt.Errorf("creating temporary file: %w", err)
+	}
+	tmpName := destFile.Name()
+	defer os.Remove(tmpName)
+
+	if err := destFile.Chmod(sourceInfo.Mode()); err != nil {
+		destFile.Close()
+		return fmt.Errorf("setting temporary file permissions: %w", err)
 	}
 
 	// Use buffered writer for better performance
@@ -363,7 +370,12 @@ func Copy(src, dst string) error {
 	}
 
 	if err := destFile.Close(); err != nil {
-		return fmt.Errorf("closing destination file: %w", err)
+		return fmt.Errorf("closing temporary file: %w", err)
+	}
+
+	// Atomically rename temporary file to destination
+	if err := os.Rename(tmpName, dst); err != nil {
+		return fmt.Errorf("renaming temporary file: %w", err)
 	}
 
 	return nil
