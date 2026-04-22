@@ -16,7 +16,6 @@ limitations under the License.
 package fileflow
 
 import (
-	"bufio"
 	"bytes"
 	"errors"
 	"fmt"
@@ -335,25 +334,24 @@ func Copy(src, dst string) error {
 		return fmt.Errorf("getting source file info: %w", err)
 	}
 
-	// Create destination file with same permissions
-	destFile, err := os.OpenFile(dst, os.O_RDWR|os.O_CREATE|os.O_TRUNC, sourceInfo.Mode())
+	// SECURITY: Use atomic write pattern (CreateTemp + Rename) to prevent TOCTOU symlink vulnerabilities
+	destFile, err := os.CreateTemp(filepath.Dir(dst), "fileflow-*")
 	if err != nil {
-		return fmt.Errorf("creating destination file: %w", err)
+		return fmt.Errorf("creating temporary destination file: %w", err)
+	}
+	tempName := destFile.Name()
+	defer os.Remove(tempName) // Ensure cleanup on failure
+
+	// Ensure the temp file has the correct permissions before renaming
+	if err := destFile.Chmod(sourceInfo.Mode()); err != nil {
+		destFile.Close()
+		return fmt.Errorf("setting permissions on temporary file: %w", err)
 	}
 
-	// Use buffered writer for better performance
-	writer := bufio.NewWriterSize(destFile, BufferSize)
-
-	// Copy the file
-	if _, err := io.Copy(writer, sourceFile); err != nil {
+	// Copy the file (zero-copy if supported without bufio)
+	if _, err := io.Copy(destFile, sourceFile); err != nil {
 		destFile.Close()
 		return fmt.Errorf("copying file content: %w", err)
-	}
-
-	// Ensure all buffered data is written
-	if err := writer.Flush(); err != nil {
-		destFile.Close()
-		return fmt.Errorf("flushing writer: %w", err)
 	}
 
 	// Ensure file is properly written to disk
@@ -363,7 +361,12 @@ func Copy(src, dst string) error {
 	}
 
 	if err := destFile.Close(); err != nil {
-		return fmt.Errorf("closing destination file: %w", err)
+		return fmt.Errorf("closing temporary destination file: %w", err)
+	}
+
+	// Atomically rename to final destination
+	if err := os.Rename(tempName, dst); err != nil {
+		return fmt.Errorf("renaming temporary file to destination: %w", err)
 	}
 
 	return nil

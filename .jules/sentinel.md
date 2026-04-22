@@ -1,0 +1,4 @@
+## 2024-05-24 - TOCTOU Symlink Vulnerability in File Copy
+**Vulnerability:** The file copy operation uses `os.OpenFile` with `os.O_TRUNC` directly on the destination path after checking if the file exists. This creates a Time-of-Check to Time-of-Use (TOCTOU) vulnerability where an attacker can place a symlink at the destination path between the check and the open, causing the application to overwrite an arbitrary file.
+**Learning:** Checking for file existence before opening is not sufficient to prevent malicious symlink replacements in shared directories. Standard file open operations follow symlinks.
+**Prevention:** Use an atomic write pattern. Create a temporary file in the destination directory using `os.CreateTemp`, write the data, set permissions using `Chmod`, and then perform an atomic `os.Rename` to safely move it to the final destination.
