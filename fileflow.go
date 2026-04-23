@@ -16,7 +16,6 @@ limitations under the License.
 package fileflow
 
 import (
-	"bufio"
 	"bytes"
 	"errors"
 	"fmt"
@@ -341,19 +340,14 @@ func Copy(src, dst string) error {
 		return fmt.Errorf("creating destination file: %w", err)
 	}
 
-	// Use buffered writer for better performance
-	writer := bufio.NewWriterSize(destFile, BufferSize)
-
+	// Use io.CopyBuffer instead of io.Copy. This still calls destFile.ReadFrom()
+	// enabling zero-copy system calls like copy_file_range/sendfile on Linux,
+	// but falls back to user-configured BufferSize on macOS and Windows
+	// instead of io.Copy's internal 32KB default.
 	// Copy the file
-	if _, err := io.Copy(writer, sourceFile); err != nil {
+	if _, err := io.CopyBuffer(destFile, sourceFile, make([]byte, BufferSize)); err != nil {
 		destFile.Close()
 		return fmt.Errorf("copying file content: %w", err)
-	}
-
-	// Ensure all buffered data is written
-	if err := writer.Flush(); err != nil {
-		destFile.Close()
-		return fmt.Errorf("flushing writer: %w", err)
 	}
 
 	// Ensure file is properly written to disk
