@@ -334,10 +334,17 @@ func Copy(src, dst string) error {
 		return fmt.Errorf("getting source file info: %w", err)
 	}
 
-	// Create destination file with same permissions
-	destFile, err := os.OpenFile(dst, os.O_RDWR|os.O_CREATE|os.O_TRUNC, sourceInfo.Mode())
+	// Securely create destination file using temp file to prevent TOCTOU vulnerabilities
+	destFile, err := os.CreateTemp(filepath.Dir(dst), ".*")
 	if err != nil {
-		return fmt.Errorf("creating destination file: %w", err)
+		return fmt.Errorf("creating temporary file: %w", err)
+	}
+	tempName := destFile.Name()
+	defer os.Remove(tempName)
+
+	if err := destFile.Chmod(sourceInfo.Mode()); err != nil {
+		destFile.Close()
+		return fmt.Errorf("setting temporary file permissions: %w", err)
 	}
 
 	// Use io.CopyBuffer instead of io.Copy. This still calls destFile.ReadFrom()
@@ -358,6 +365,10 @@ func Copy(src, dst string) error {
 
 	if err := destFile.Close(); err != nil {
 		return fmt.Errorf("closing destination file: %w", err)
+	}
+
+	if err := os.Rename(tempName, dst); err != nil {
+		return fmt.Errorf("renaming temporary file: %w", err)
 	}
 
 	return nil
