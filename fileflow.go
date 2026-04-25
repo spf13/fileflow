@@ -18,6 +18,7 @@ package fileflow
 import (
 	"bytes"
 	"errors"
+	"sync"
 	"fmt"
 	"io"
 	"io/fs"
@@ -38,6 +39,14 @@ const (
 )
 
 var (
+	// copyBufPool reuses file buffers to reduce memory allocations during copy operations
+	copyBufPool = sync.Pool{
+		New: func() interface{} {
+			b := make([]byte, BufferSize)
+			return &b
+		},
+	}
+
 	ErrSameFile           = errors.New("source and destination are the same")
 	ErrMaxAttemptsReached = errors.New("maximum increment attempts reached")
 	ErrLockTimeout        = errors.New("timeout acquiring file lock")
@@ -262,8 +271,12 @@ func Equal(file1, file2 string) (bool, error) {
 	}
 	defer f2.Close()
 
-	b1 := make([]byte, BufferSize)
-	b2 := make([]byte, BufferSize)
+	b1Ptr := copyBufPool.Get().(*[]byte)
+	b2Ptr := copyBufPool.Get().(*[]byte)
+	defer copyBufPool.Put(b1Ptr)
+	defer copyBufPool.Put(b2Ptr)
+	b1 := *b1Ptr
+	b2 := *b2Ptr
 
 	for {
 		n1, err1 := f1.Read(b1)
@@ -345,7 +358,9 @@ func Copy(src, dst string) error {
 	// but falls back to user-configured BufferSize on macOS and Windows
 	// instead of io.Copy's internal 32KB default.
 	// Copy the file
-	if _, err := io.CopyBuffer(destFile, sourceFile, make([]byte, BufferSize)); err != nil {
+	bufPtr := copyBufPool.Get().(*[]byte)
+	defer copyBufPool.Put(bufPtr)
+	if _, err := io.CopyBuffer(destFile, sourceFile, *bufPtr); err != nil {
 		destFile.Close()
 		return fmt.Errorf("copying file content: %w", err)
 	}
