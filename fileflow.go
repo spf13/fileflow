@@ -334,30 +334,47 @@ func Copy(src, dst string) error {
 		return fmt.Errorf("getting source file info: %w", err)
 	}
 
-	// Create destination file with same permissions
-	destFile, err := os.OpenFile(dst, os.O_RDWR|os.O_CREATE|os.O_TRUNC, sourceInfo.Mode())
+	// Security Fix: Prevent TOCTOU via atomic write pattern
+	tmpFile, err := os.CreateTemp(filepath.Dir(dst), ".tmp-*")
 	if err != nil {
-		return fmt.Errorf("creating destination file: %w", err)
+		return fmt.Errorf("creating temporary file: %w", err)
 	}
+	tmpName := tmpFile.Name()
+	defer func() {
+		if tmpFile != nil {
+			tmpFile.Close()
+			os.Remove(tmpName)
+		}
+	}()
 
 	// Use io.CopyBuffer instead of io.Copy. This still calls destFile.ReadFrom()
 	// enabling zero-copy system calls like copy_file_range/sendfile on Linux,
 	// but falls back to user-configured BufferSize on macOS and Windows
 	// instead of io.Copy's internal 32KB default.
 	// Copy the file
-	if _, err := io.CopyBuffer(destFile, sourceFile, make([]byte, BufferSize)); err != nil {
-		destFile.Close()
+	if _, err := io.CopyBuffer(tmpFile, sourceFile, make([]byte, BufferSize)); err != nil {
 		return fmt.Errorf("copying file content: %w", err)
 	}
 
 	// Ensure file is properly written to disk
-	if err := destFile.Sync(); err != nil {
-		destFile.Close()
+	if err := tmpFile.Sync(); err != nil {
 		return fmt.Errorf("syncing file: %w", err)
 	}
 
-	if err := destFile.Close(); err != nil {
-		return fmt.Errorf("closing destination file: %w", err)
+	if err := tmpFile.Chmod(sourceInfo.Mode()); err != nil {
+		return fmt.Errorf("setting file permissions: %w", err)
+	}
+
+	if err := tmpFile.Close(); err != nil {
+		tmpFile = nil
+		os.Remove(tmpName)
+		return fmt.Errorf("closing temporary file: %w", err)
+	}
+	tmpFile = nil
+
+	if err := os.Rename(tmpName, dst); err != nil {
+		os.Remove(tmpName)
+		return fmt.Errorf("renaming temporary file: %w", err)
 	}
 
 	return nil
