@@ -334,11 +334,12 @@ func Copy(src, dst string) error {
 		return fmt.Errorf("getting source file info: %w", err)
 	}
 
-	// Create destination file with same permissions
-	destFile, err := os.OpenFile(dst, os.O_RDWR|os.O_CREATE|os.O_TRUNC, sourceInfo.Mode())
+	// Create a temporary file to avoid TOCTOU symlink vulnerabilities
+	destFile, err := os.CreateTemp(filepath.Dir(dst), ".*.tmp")
 	if err != nil {
-		return fmt.Errorf("creating destination file: %w", err)
+		return fmt.Errorf("creating temporary file: %w", err)
 	}
+	tmpName := destFile.Name()
 
 	// Use io.CopyBuffer instead of io.Copy. This still calls destFile.ReadFrom()
 	// enabling zero-copy system calls like copy_file_range/sendfile on Linux,
@@ -347,17 +348,33 @@ func Copy(src, dst string) error {
 	// Copy the file
 	if _, err := io.CopyBuffer(destFile, sourceFile, make([]byte, BufferSize)); err != nil {
 		destFile.Close()
+		os.Remove(tmpName)
 		return fmt.Errorf("copying file content: %w", err)
 	}
 
 	// Ensure file is properly written to disk
 	if err := destFile.Sync(); err != nil {
 		destFile.Close()
+		os.Remove(tmpName)
 		return fmt.Errorf("syncing file: %w", err)
 	}
 
+	// Explicitly apply the original file permissions to the temporary file securely
+	if err := destFile.Chmod(sourceInfo.Mode()); err != nil {
+		destFile.Close()
+		os.Remove(tmpName)
+		return fmt.Errorf("setting file permissions: %w", err)
+	}
+
 	if err := destFile.Close(); err != nil {
-		return fmt.Errorf("closing destination file: %w", err)
+		os.Remove(tmpName)
+		return fmt.Errorf("closing temporary file: %w", err)
+	}
+
+	// Atomically rename over the destination to prevent TOCTOU
+	if err := os.Rename(tmpName, dst); err != nil {
+		os.Remove(tmpName)
+		return fmt.Errorf("renaming file: %w", err)
 	}
 
 	return nil
