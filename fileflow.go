@@ -24,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -53,6 +54,13 @@ var (
 	// function or the provided FindAvailableNameTS which instead of
 	// incrementing adds a timestamp
 	FindAvailableName func(string) (string, error) = FindAvailableNameInc
+
+	bufferPool = sync.Pool{
+		New: func() interface{} {
+			b := make([]byte, BufferSize)
+			return &b
+		},
+	}
 )
 
 // ErrFailedRemovingOriginal occurs when the original file cannot be removed
@@ -262,8 +270,25 @@ func Equal(file1, file2 string) (bool, error) {
 	}
 	defer f2.Close()
 
-	b1 := make([]byte, BufferSize)
-	b2 := make([]byte, BufferSize)
+	b1Ptr := bufferPool.Get().(*[]byte)
+	defer bufferPool.Put(b1Ptr)
+	b1 := *b1Ptr
+	if cap(b1) < BufferSize {
+		b1 = make([]byte, BufferSize)
+		*b1Ptr = b1
+	} else {
+		b1 = b1[:BufferSize]
+	}
+
+	b2Ptr := bufferPool.Get().(*[]byte)
+	defer bufferPool.Put(b2Ptr)
+	b2 := *b2Ptr
+	if cap(b2) < BufferSize {
+		b2 = make([]byte, BufferSize)
+		*b2Ptr = b2
+	} else {
+		b2 = b2[:BufferSize]
+	}
 
 	for {
 		n1, err1 := f1.Read(b1)
@@ -345,7 +370,17 @@ func Copy(src, dst string) error {
 	// but falls back to user-configured BufferSize on macOS and Windows
 	// instead of io.Copy's internal 32KB default.
 	// Copy the file
-	if _, err := io.CopyBuffer(destFile, sourceFile, make([]byte, BufferSize)); err != nil {
+	bufPtr := bufferPool.Get().(*[]byte)
+	defer bufferPool.Put(bufPtr)
+	buf := *bufPtr
+	if cap(buf) < BufferSize {
+		buf = make([]byte, BufferSize)
+		*bufPtr = buf
+	} else {
+		buf = buf[:BufferSize]
+	}
+
+	if _, err := io.CopyBuffer(destFile, sourceFile, buf); err != nil {
 		destFile.Close()
 		return fmt.Errorf("copying file content: %w", err)
 	}
