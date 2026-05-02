@@ -24,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -54,6 +55,30 @@ var (
 	// incrementing adds a timestamp
 	FindAvailableName func(string) (string, error) = FindAvailableNameInc
 )
+
+
+// ⚡ Bolt: Use a sync.Pool for buffer reuse to reduce memory allocations
+// and GC pressure during high-throughput file operations.
+var bufferPool sync.Pool
+
+func getBuffer() *[]byte {
+	v := bufferPool.Get()
+	if v == nil {
+		b := make([]byte, BufferSize)
+		return &b
+	}
+	b := v.(*[]byte)
+	if cap(*b) < BufferSize {
+		newB := make([]byte, BufferSize)
+		return &newB
+	}
+	*b = (*b)[:BufferSize]
+	return b
+}
+
+func putBuffer(b *[]byte) {
+	bufferPool.Put(b)
+}
 
 // ErrFailedRemovingOriginal occurs when the original file cannot be removed
 type ErrFailedRemovingOriginal struct {
@@ -262,8 +287,13 @@ func Equal(file1, file2 string) (bool, error) {
 	}
 	defer f2.Close()
 
-	b1 := make([]byte, BufferSize)
-	b2 := make([]byte, BufferSize)
+	bp1 := getBuffer()
+	defer putBuffer(bp1)
+	b1 := *bp1
+
+	bp2 := getBuffer()
+	defer putBuffer(bp2)
+	b2 := *bp2
 
 	for {
 		n1, err1 := f1.Read(b1)
@@ -340,12 +370,16 @@ func Copy(src, dst string) error {
 		return fmt.Errorf("creating destination file: %w", err)
 	}
 
+	bp := getBuffer()
+	defer putBuffer(bp)
+	buf := *bp
+
 	// Use io.CopyBuffer instead of io.Copy. This still calls destFile.ReadFrom()
 	// enabling zero-copy system calls like copy_file_range/sendfile on Linux,
 	// but falls back to user-configured BufferSize on macOS and Windows
 	// instead of io.Copy's internal 32KB default.
 	// Copy the file
-	if _, err := io.CopyBuffer(destFile, sourceFile, make([]byte, BufferSize)); err != nil {
+	if _, err := io.CopyBuffer(destFile, sourceFile, buf); err != nil {
 		destFile.Close()
 		return fmt.Errorf("copying file content: %w", err)
 	}
