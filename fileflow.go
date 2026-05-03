@@ -24,9 +24,33 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sync"
 	"syscall"
 	"time"
 )
+
+
+// bufferPool is used to reuse large buffers to reduce GC pressure and memory allocations.
+var bufferPool = sync.Pool{
+	New: func() interface{} {
+		b := make([]byte, BufferSize)
+		return &b
+	},
+}
+
+func getBuffer() *[]byte {
+	b := bufferPool.Get().(*[]byte)
+	if cap(*b) < BufferSize {
+		newB := make([]byte, BufferSize)
+		b = &newB
+	}
+	*b = (*b)[:BufferSize]
+	return b
+}
+
+func putBuffer(b *[]byte) {
+	bufferPool.Put(b)
+}
 
 const (
 	// DefaultBufferSize is the default buffer size used for file operations
@@ -262,8 +286,13 @@ func Equal(file1, file2 string) (bool, error) {
 	}
 	defer f2.Close()
 
-	b1 := make([]byte, BufferSize)
-	b2 := make([]byte, BufferSize)
+	b1Ptr := getBuffer()
+	defer putBuffer(b1Ptr)
+	b1 := *b1Ptr
+
+	b2Ptr := getBuffer()
+	defer putBuffer(b2Ptr)
+	b2 := *b2Ptr
 
 	for {
 		n1, err1 := f1.Read(b1)
@@ -345,7 +374,9 @@ func Copy(src, dst string) error {
 	// but falls back to user-configured BufferSize on macOS and Windows
 	// instead of io.Copy's internal 32KB default.
 	// Copy the file
-	if _, err := io.CopyBuffer(destFile, sourceFile, make([]byte, BufferSize)); err != nil {
+	bPtr := getBuffer()
+	defer putBuffer(bPtr)
+	if _, err := io.CopyBuffer(destFile, sourceFile, *bPtr); err != nil {
 		destFile.Close()
 		return fmt.Errorf("copying file content: %w", err)
 	}
