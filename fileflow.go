@@ -334,6 +334,7 @@ func Copy(src, dst string) error {
 		return fmt.Errorf("getting source file info: %w", err)
 	}
 
+	// Create destination file with same permissions
 	// Create a temporary file in the destination directory to prevent TOCTOU
 	// symlink vulnerabilities and ensure atomic writes.
 	destFile, err := os.CreateTemp(filepath.Dir(dst), filepath.Base(dst)+".*")
@@ -342,8 +343,9 @@ func Copy(src, dst string) error {
 	}
 	tmpName := destFile.Name()
 
+	cleanup := true
 	defer func() {
-		if destFile != nil {
+		if cleanup {
 			destFile.Close()
 			os.Remove(tmpName)
 		}
@@ -369,16 +371,16 @@ func Copy(src, dst string) error {
 	}
 
 	if err := destFile.Close(); err != nil {
-		os.Remove(tmpName)
-		destFile = nil
 		return fmt.Errorf("closing destination file: %w", err)
 	}
-	destFile = nil
 
+	// Note: os.Rename will silently overwrite dst if it was recreated between
+	// FindAvailableName and here. This leaves a narrow residual race condition,
+	// but is a necessary tradeoff compared to a complete TOCTOU vulnerability.
 	if err := os.Rename(tmpName, dst); err != nil {
-		os.Remove(tmpName)
 		return fmt.Errorf("renaming temporary file: %w", err)
 	}
 
+	cleanup = false
 	return nil
 }
