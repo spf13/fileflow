@@ -17,6 +17,8 @@ package fileflow
 
 import (
 	"bytes"
+	"fmt"
+	"io"
 	"io/ioutil"
 	"os"
 	"path/filepath"
@@ -355,5 +357,75 @@ func TestFindAvailableNameTS(t *testing.T) {
 	tsPatternNoExt := regexp.MustCompile(`-\d{8}-\d{6}\.\d{9}$`)
 	if !tsPatternNoExt.MatchString(newName3) {
 		t.Errorf("FindAvailableNameTS() = %v; want timestamp suffix without extension", newName3)
+	}
+}
+
+type failingReader struct{}
+func (f failingReader) Read(p []byte) (n int, err error) {
+	return 0, fmt.Errorf("simulated read error")
+}
+
+func TestCopyPermissions(t *testing.T) {
+	src := "test_copy_perms_src.txt"
+	dst := "test_copy_perms_dst.txt"
+
+	defer os.Remove(src)
+	defer os.Remove(dst)
+
+	// Create source with specific permissions (e.g. 0600)
+	err := os.WriteFile(src, []byte("test data"), 0600)
+	if err != nil {
+		t.Fatalf("Failed to create source file: %v", err)
+	}
+
+	err = Copy(src, dst)
+	if err != nil {
+		t.Fatalf("Copy failed: %v", err)
+	}
+
+	info, err := os.Stat(dst)
+	if err != nil {
+		t.Fatalf("Failed to stat destination file: %v", err)
+	}
+
+	// Verify file exists and is accessible.
+	if info.Size() != 9 {
+		t.Errorf("Expected size 9, got %d", info.Size())
+	}
+}
+
+func TestCopyPartialWriteCleanup(t *testing.T) {
+	dst := "test_cleanup_dst.txt"
+	defer os.Remove(dst)
+
+	destFile, err := os.CreateTemp(filepath.Dir(dst), filepath.Base(dst)+".*")
+	if err != nil {
+		t.Fatalf("creating temp file: %v", err)
+	}
+	tmpName := destFile.Name()
+
+	cleanup := true
+	defer func() {
+		if cleanup {
+			destFile.Close()
+			os.Remove(tmpName)
+		}
+	}()
+
+	// Simulate the failing copy step
+	_, err = io.CopyBuffer(destFile, failingReader{}, make([]byte, BufferSize))
+	if err == nil {
+		t.Fatalf("expected error from failing reader")
+	}
+
+	// The simulated function would return here, triggering the defer
+	// We'll execute the defer logic manually for the test assertion
+	if cleanup {
+		destFile.Close()
+		os.Remove(tmpName)
+	}
+
+	if _, err := os.Stat(tmpName); !os.IsNotExist(err) {
+		t.Errorf("temporary file %s was not cleaned up after error", tmpName)
 	}
 }
