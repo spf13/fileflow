@@ -23,6 +23,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sync"
 	"regexp"
 	"syscall"
 	"time"
@@ -54,6 +55,33 @@ var (
 	// incrementing adds a timestamp
 	FindAvailableName func(string) (string, error) = FindAvailableNameInc
 )
+
+// bufferPool is used to reuse 32KB buffers for copying and equality checks
+// to reduce memory allocations and garbage collection overhead.
+var bufferPool = sync.Pool{
+	New: func() interface{} {
+		b := make([]byte, BufferSize)
+		return &b
+	},
+}
+
+// getBuffer retrieves a byte slice from the pool, allocating a new one
+// or resizing if the global BufferSize has been overridden.
+func getBuffer() *[]byte {
+	bp := bufferPool.Get().(*[]byte)
+	if cap(*bp) < BufferSize {
+		b := make([]byte, BufferSize)
+		bp = &b
+	} else if len(*bp) != BufferSize {
+		*bp = (*bp)[:BufferSize]
+	}
+	return bp
+}
+
+// putBuffer returns a byte slice to the pool.
+func putBuffer(bp *[]byte) {
+	bufferPool.Put(bp)
+}
 
 // ErrFailedRemovingOriginal occurs when the original file cannot be removed
 type ErrFailedRemovingOriginal struct {
@@ -262,8 +290,12 @@ func Equal(file1, file2 string) (bool, error) {
 	}
 	defer f2.Close()
 
-	b1 := make([]byte, BufferSize)
-	b2 := make([]byte, BufferSize)
+	bp1 := getBuffer()
+	bp2 := getBuffer()
+	defer putBuffer(bp1)
+	defer putBuffer(bp2)
+	b1 := *bp1
+	b2 := *bp2
 
 	for {
 		n1, err1 := f1.Read(b1)
@@ -345,7 +377,9 @@ func Copy(src, dst string) error {
 	// but falls back to user-configured BufferSize on macOS and Windows
 	// instead of io.Copy's internal 32KB default.
 	// Copy the file
-	if _, err := io.CopyBuffer(destFile, sourceFile, make([]byte, BufferSize)); err != nil {
+	bp := getBuffer()
+	defer putBuffer(bp)
+	if _, err := io.CopyBuffer(destFile, sourceFile, *bp); err != nil {
 		destFile.Close()
 		return fmt.Errorf("copying file content: %w", err)
 	}
