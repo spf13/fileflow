@@ -67,12 +67,15 @@ var bufferPool = sync.Pool{
 
 // getBuffer retrieves a byte slice from the pool, allocating a new one
 // or resizing if the global BufferSize has been overridden.
+// This ensures that if a user changes BufferSize at runtime, the pool
+// will adapt correctly while still preventing the old buffer from leaking.
 func getBuffer() *[]byte {
 	bp := bufferPool.Get().(*[]byte)
 	if cap(*bp) < BufferSize {
+		bufferPool.Put(bp) // return the old one first to avoid leak
 		b := make([]byte, BufferSize)
 		bp = &b
-	} else if len(*bp) != BufferSize {
+	} else {
 		*bp = (*bp)[:BufferSize]
 	}
 	return bp
