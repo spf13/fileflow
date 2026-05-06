@@ -1,0 +1,4 @@
+## 2024-05-06 - Prevent TOCTOU Symlink Vulnerability
+**Vulnerability:** A Time-of-Check to Time-of-Use (TOCTOU) vulnerability existed in `Copy` when creating the destination file directly with `os.OpenFile`. The file could have been substituted with a symlink after existence checks but before opening, leading to arbitrary file overwrite.
+**Learning:** Using `os.O_EXCL` breaks overwrite functionality. To prevent TOCTOU symlink vulnerabilities during file writes, use an atomic write pattern by creating a temporary file and atomically renaming it to the destination path.
+**Prevention:** In Go, use `os.CreateTemp` in the destination directory, ensure correct permissions using `Chmod`, handle error-path cleanups to prevent resource leaks, and finally use `os.Rename` to atomically commit the file.
