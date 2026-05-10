@@ -1,0 +1,4 @@
+## 2024-05-10 - TOCTOU Vulnerability in File Copy
+**Vulnerability:** The `Copy` function created a destination file directly using `os.OpenFile` and then copied data into it. This is susceptible to a Time-of-Check to Time-of-Use (TOCTOU) symlink vulnerability where an attacker could replace the destination file with a symlink between the check/creation and the actual write.
+**Learning:** To prevent TOCTOU vulnerabilities during file writes, an atomic write pattern must be used: create a temporary file, write data, apply original permissions, and then perform an atomic `os.Rename`.
+**Prevention:** Always use atomic writes (`os.CreateTemp` followed by `os.Rename`) instead of directly opening and writing to the destination file, and explicitly apply the original or intended file permissions to the temporary file before renaming.
