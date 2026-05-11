@@ -25,6 +25,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"syscall"
+	"sync"
 	"time"
 )
 
@@ -46,6 +47,14 @@ var (
 	BufferSize                       = DefaultBufferSize // user can override this value
 	FileMode             fs.FileMode = DefaultFileMode   // user can override this value
 	DirMode              fs.FileMode = DefaultDirMode    // user can override this value
+
+	// bufferPool reuses buffers for file operations to reduce memory allocations
+	bufferPool = sync.Pool{
+		New: func() interface{} {
+			b := make([]byte, BufferSize)
+			return &b
+		},
+	}
 
 	// FindAvailableName is the function used to find an available filename
 	// The default behavior is to increment the filename
@@ -262,8 +271,22 @@ func Equal(file1, file2 string) (bool, error) {
 	}
 	defer f2.Close()
 
-	b1 := make([]byte, BufferSize)
-	b2 := make([]byte, BufferSize)
+	// Retrieve pointers to byte slices to avoid allocations when converting to interface{}
+	ptr1 := bufferPool.Get().(*[]byte)
+	if len(*ptr1) != BufferSize {
+		newB := make([]byte, BufferSize)
+		ptr1 = &newB
+	}
+	defer bufferPool.Put(ptr1)
+	b1 := *ptr1
+
+	ptr2 := bufferPool.Get().(*[]byte)
+	if len(*ptr2) != BufferSize {
+		newB := make([]byte, BufferSize)
+		ptr2 = &newB
+	}
+	defer bufferPool.Put(ptr2)
+	b2 := *ptr2
 
 	for {
 		n1, err1 := f1.Read(b1)
@@ -340,12 +363,21 @@ func Copy(src, dst string) error {
 		return fmt.Errorf("creating destination file: %w", err)
 	}
 
+	// Retrieve pointer to byte slice to avoid allocations when converting to interface{}
+	ptr := bufferPool.Get().(*[]byte)
+	if len(*ptr) != BufferSize {
+		newB := make([]byte, BufferSize)
+		ptr = &newB
+	}
+	defer bufferPool.Put(ptr)
+	b := *ptr
+
 	// Use io.CopyBuffer instead of io.Copy. This still calls destFile.ReadFrom()
 	// enabling zero-copy system calls like copy_file_range/sendfile on Linux,
 	// but falls back to user-configured BufferSize on macOS and Windows
 	// instead of io.Copy's internal 32KB default.
 	// Copy the file
-	if _, err := io.CopyBuffer(destFile, sourceFile, make([]byte, BufferSize)); err != nil {
+	if _, err := io.CopyBuffer(destFile, sourceFile, b); err != nil {
 		destFile.Close()
 		return fmt.Errorf("copying file content: %w", err)
 	}
