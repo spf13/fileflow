@@ -24,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -46,6 +47,16 @@ var (
 	BufferSize                       = DefaultBufferSize // user can override this value
 	FileMode             fs.FileMode = DefaultFileMode   // user can override this value
 	DirMode              fs.FileMode = DefaultDirMode    // user can override this value
+
+	// bufferPool reuses 32KB buffers for Copy and Equal operations.
+	// This optimization significantly reduces memory allocations and
+	// garbage collection pressure during repetitive file operations.
+	bufferPool = sync.Pool{
+		New: func() interface{} {
+			b := make([]byte, BufferSize)
+			return &b
+		},
+	}
 
 	// FindAvailableName is the function used to find an available filename
 	// The default behavior is to increment the filename
@@ -262,8 +273,21 @@ func Equal(file1, file2 string) (bool, error) {
 	}
 	defer f2.Close()
 
-	b1 := make([]byte, BufferSize)
-	b2 := make([]byte, BufferSize)
+	b1Ptr := bufferPool.Get().(*[]byte)
+	if len(*b1Ptr) != BufferSize {
+		newB := make([]byte, BufferSize)
+		b1Ptr = &newB
+	}
+	defer bufferPool.Put(b1Ptr)
+	b1 := *b1Ptr
+
+	b2Ptr := bufferPool.Get().(*[]byte)
+	if len(*b2Ptr) != BufferSize {
+		newB := make([]byte, BufferSize)
+		b2Ptr = &newB
+	}
+	defer bufferPool.Put(b2Ptr)
+	b2 := *b2Ptr
 
 	for {
 		n1, err1 := f1.Read(b1)
@@ -345,7 +369,14 @@ func Copy(src, dst string) error {
 	// but falls back to user-configured BufferSize on macOS and Windows
 	// instead of io.Copy's internal 32KB default.
 	// Copy the file
-	if _, err := io.CopyBuffer(destFile, sourceFile, make([]byte, BufferSize)); err != nil {
+	bufPtr := bufferPool.Get().(*[]byte)
+	if len(*bufPtr) != BufferSize {
+		newB := make([]byte, BufferSize)
+		bufPtr = &newB
+	}
+	defer bufferPool.Put(bufPtr)
+
+	if _, err := io.CopyBuffer(destFile, sourceFile, *bufPtr); err != nil {
 		destFile.Close()
 		return fmt.Errorf("copying file content: %w", err)
 	}
