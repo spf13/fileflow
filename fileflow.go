@@ -24,9 +24,31 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sync"
 	"syscall"
 	"time"
 )
+
+var bufferPool = sync.Pool{
+	New: func() interface{} {
+		b := make([]byte, BufferSize)
+		return &b
+	},
+}
+
+func getBuffer() *[]byte {
+	p := bufferPool.Get().(*[]byte)
+	if cap(*p) < BufferSize {
+		b := make([]byte, BufferSize)
+		return &b
+	}
+	*p = (*p)[:BufferSize]
+	return p
+}
+
+func putBuffer(p *[]byte) {
+	bufferPool.Put(p)
+}
 
 const (
 	// DefaultBufferSize is the default buffer size used for file operations
@@ -262,8 +284,13 @@ func Equal(file1, file2 string) (bool, error) {
 	}
 	defer f2.Close()
 
-	b1 := make([]byte, BufferSize)
-	b2 := make([]byte, BufferSize)
+	b1Ptr := getBuffer()
+	b1 := *b1Ptr
+	defer putBuffer(b1Ptr)
+
+	b2Ptr := getBuffer()
+	b2 := *b2Ptr
+	defer putBuffer(b2Ptr)
 
 	for {
 		n1, err1 := f1.Read(b1)
@@ -345,7 +372,11 @@ func Copy(src, dst string) error {
 	// but falls back to user-configured BufferSize on macOS and Windows
 	// instead of io.Copy's internal 32KB default.
 	// Copy the file
-	if _, err := io.CopyBuffer(destFile, sourceFile, make([]byte, BufferSize)); err != nil {
+	bufPtr := getBuffer()
+	buf := *bufPtr
+	_, err = io.CopyBuffer(destFile, sourceFile, buf)
+	putBuffer(bufPtr)
+	if err != nil {
 		destFile.Close()
 		return fmt.Errorf("copying file content: %w", err)
 	}
