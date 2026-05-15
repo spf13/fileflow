@@ -1,3 +1,6 @@
 ## 2024-04-23 - Avoid bufio.Writer with io.Copy for os.File
 **Learning:** Wrapping a standard file (`*os.File`) in `bufio.Writer` when using `io.Copy` disables zero-copy system calls like `sendfile` or `copy_file_range`. This degrades file copy performance.
 **Action:** Use direct `io.Copy` with `*os.File` instances directly, instead of wrapping them in a buffered writer, to take advantage of OS-level zero-copy optimizations.
+## 2024-05-15 - Use sync.Pool for large file copy buffers
+**Learning:** Using `sync.Pool` to reuse `[]byte` buffers for operations like `Equal` and `Copy` in Go packages with configurable/large buffer sizes significantly reduces memory allocations and GC pressure. However, directly storing `[]byte` in `sync.Pool` causes a heap allocation on `Put()` since `sync.Pool` takes an `interface{}`. Storing a pointer `*[]byte` prevents this allocation. Additionally, because the required buffer size might change at runtime based on the `BufferSize` global variable, we must verify the retrieved slice capacity to avoid panics.
+**Action:** When using `sync.Pool` for byte slices in Go, store `*[]byte` instead of `[]byte` to avoid native heap allocations when wrapping in `interface{}`. Also, always verify capacity if the required buffer size can be modified dynamically at runtime.
