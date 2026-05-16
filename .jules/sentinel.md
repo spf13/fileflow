@@ -1,0 +1,4 @@
+## 2024-05-16 - Prevent TOCTOU symlink vulnerabilities
+**Vulnerability:** The `fileflow.Copy` function was vulnerable to a Time-of-Check to Time-of-Use (TOCTOU) symlink race condition because it created the destination file directly with `os.OpenFile(..., os.O_CREATE|os.O_TRUNC)`.
+**Learning:** In Go, simply appending `os.O_EXCL` breaks overwrite functionality. To prevent TOCTOU vulnerabilities safely, one must use an atomic write pattern (temp file + `os.Rename`).
+**Prevention:** Create a temporary file in the destination directory using `os.CreateTemp(filepath.Dir(dst), ...)` (to avoid cross-device rename failures), write to it, apply correct permissions with `Chmod`, and rename it atomically over the destination. Proper defer and pointer cleanup is essential to prevent temp file leakage.
