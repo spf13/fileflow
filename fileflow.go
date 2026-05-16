@@ -24,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -36,6 +37,28 @@ const (
 	// DefaultDirMode is the default permission mode for new directories
 	DefaultDirMode = 0755
 )
+
+var bufferPool = sync.Pool{
+	New: func() interface{} {
+		b := make([]byte, BufferSize)
+		return &b
+	},
+}
+
+func getBuffer() *[]byte {
+	b := bufferPool.Get().(*[]byte)
+	if cap(*b) < BufferSize {
+		newB := make([]byte, BufferSize)
+		b = &newB
+	} else if len(*b) != BufferSize {
+		*b = (*b)[:BufferSize]
+	}
+	return b
+}
+
+func putBuffer(b *[]byte) {
+	bufferPool.Put(b)
+}
 
 var (
 	ErrSameFile           = errors.New("source and destination are the same")
@@ -262,8 +285,13 @@ func Equal(file1, file2 string) (bool, error) {
 	}
 	defer f2.Close()
 
-	b1 := make([]byte, BufferSize)
-	b2 := make([]byte, BufferSize)
+	bp1 := getBuffer()
+	defer putBuffer(bp1)
+	b1 := *bp1
+
+	bp2 := getBuffer()
+	defer putBuffer(bp2)
+	b2 := *bp2
 
 	for {
 		n1, err1 := f1.Read(b1)
@@ -345,7 +373,9 @@ func Copy(src, dst string) error {
 	// but falls back to user-configured BufferSize on macOS and Windows
 	// instead of io.Copy's internal 32KB default.
 	// Copy the file
-	if _, err := io.CopyBuffer(destFile, sourceFile, make([]byte, BufferSize)); err != nil {
+	bp := getBuffer()
+	defer putBuffer(bp)
+	if _, err := io.CopyBuffer(destFile, sourceFile, *bp); err != nil {
 		destFile.Close()
 		return fmt.Errorf("copying file content: %w", err)
 	}
