@@ -24,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -201,6 +202,31 @@ func Exists(path string) bool {
 	return err == nil && !info.IsDir()
 }
 
+// bufferPool reuses buffers for file operations to reduce GC pressure.
+var bufferPool = sync.Pool{
+	New: func() interface{} {
+		b := make([]byte, BufferSize)
+		return &b
+	},
+}
+
+// getBuffer retrieves a buffer from the pool, reallocating if BufferSize has increased.
+func getBuffer() *[]byte {
+	b := bufferPool.Get().(*[]byte)
+	size := BufferSize // Read mutable global once to prevent race conditions
+	if cap(*b) < size {
+		newB := make([]byte, size)
+		b = &newB
+	}
+	*b = (*b)[:size]
+	return b
+}
+
+// putBuffer returns a buffer to the pool.
+func putBuffer(b *[]byte) {
+	bufferPool.Put(b)
+}
+
 var incrementPattern = regexp.MustCompile(`-\d+$`)
 
 // FindAvailableNameInc returns an available filename by incrementing a counter
@@ -262,8 +288,13 @@ func Equal(file1, file2 string) (bool, error) {
 	}
 	defer f2.Close()
 
-	b1 := make([]byte, BufferSize)
-	b2 := make([]byte, BufferSize)
+	b1Ptr := getBuffer()
+	defer putBuffer(b1Ptr)
+	b1 := *b1Ptr
+
+	b2Ptr := getBuffer()
+	defer putBuffer(b2Ptr)
+	b2 := *b2Ptr
 
 	for {
 		n1, err1 := f1.Read(b1)
@@ -345,7 +376,9 @@ func Copy(src, dst string) error {
 	// but falls back to user-configured BufferSize on macOS and Windows
 	// instead of io.Copy's internal 32KB default.
 	// Copy the file
-	if _, err := io.CopyBuffer(destFile, sourceFile, make([]byte, BufferSize)); err != nil {
+	bufPtr := getBuffer()
+	defer putBuffer(bufPtr)
+	if _, err := io.CopyBuffer(destFile, sourceFile, *bufPtr); err != nil {
 		destFile.Close()
 		return fmt.Errorf("copying file content: %w", err)
 	}
