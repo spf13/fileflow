@@ -24,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -53,6 +54,9 @@ var (
 	// function or the provided FindAvailableNameTS which instead of
 	// incrementing adds a timestamp
 	FindAvailableName func(string) (string, error) = FindAvailableNameInc
+
+	// bufferPool is used to reuse large buffers and reduce GC pressure
+	bufferPool sync.Pool
 )
 
 // ErrFailedRemovingOriginal occurs when the original file cannot be removed
@@ -262,14 +266,45 @@ func Equal(file1, file2 string) (bool, error) {
 	}
 	defer f2.Close()
 
-	b1 := make([]byte, BufferSize)
-	b2 := make([]byte, BufferSize)
+	// Use sync.Pool for large buffers
+	size := BufferSize
+	v1 := bufferPool.Get()
+	var b1 *[]byte
+	if v1 == nil {
+		buf := make([]byte, size)
+		b1 = &buf
+	} else {
+		b1 = v1.(*[]byte)
+		if cap(*b1) < size {
+			buf := make([]byte, size)
+			b1 = &buf
+		} else {
+			*b1 = (*b1)[:size]
+		}
+	}
+	defer bufferPool.Put(b1)
+
+	v2 := bufferPool.Get()
+	var b2 *[]byte
+	if v2 == nil {
+		buf := make([]byte, size)
+		b2 = &buf
+	} else {
+		b2 = v2.(*[]byte)
+		if cap(*b2) < size {
+			buf := make([]byte, size)
+			b2 = &buf
+		} else {
+			*b2 = (*b2)[:size]
+		}
+	}
+	defer bufferPool.Put(b2)
 
 	for {
-		n1, err1 := f1.Read(b1)
-		n2, err2 := f2.Read(b2)
+		n1, err1 := f1.Read(*b1)
+		n2, err2 := f2.Read(*b2)
 
-		if n1 != n2 || !bytes.Equal(b1[:n1], b2[:n2]) {
+		if n1 != n2 || !bytes.Equal((*b1)[:n1], (*b2)[:n2]) {
 			return false, nil
 		}
 
@@ -345,7 +380,24 @@ func Copy(src, dst string) error {
 	// but falls back to user-configured BufferSize on macOS and Windows
 	// instead of io.Copy's internal 32KB default.
 	// Copy the file
-	if _, err := io.CopyBuffer(destFile, sourceFile, make([]byte, BufferSize)); err != nil {
+	size := BufferSize
+	v := bufferPool.Get()
+	var b *[]byte
+	if v == nil {
+		buf := make([]byte, size)
+		b = &buf
+	} else {
+		b = v.(*[]byte)
+		if cap(*b) < size {
+			buf := make([]byte, size)
+			b = &buf
+		} else {
+			*b = (*b)[:size]
+		}
+	}
+	defer bufferPool.Put(b)
+
+	if _, err := io.CopyBuffer(destFile, sourceFile, *b); err != nil {
 		destFile.Close()
 		return fmt.Errorf("copying file content: %w", err)
 	}
