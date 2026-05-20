@@ -24,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -195,6 +196,29 @@ func fileMove(src, dst string) (string, error) {
 	return dst, nil
 }
 
+var bufferPool = sync.Pool{
+	New: func() interface{} {
+		size := BufferSize
+		b := make([]byte, size)
+		return &b
+	},
+}
+
+func getBuffer() *[]byte {
+	size := BufferSize
+	ptr := bufferPool.Get().(*[]byte)
+	if cap(*ptr) < size {
+		b := make([]byte, size)
+		return &b
+	}
+	*ptr = (*ptr)[:size]
+	return ptr
+}
+
+func putBuffer(ptr *[]byte) {
+	bufferPool.Put(ptr)
+}
+
 // Exists returns true if the file exists and is accessible
 func Exists(path string) bool {
 	info, err := os.Stat(path)
@@ -262,8 +286,13 @@ func Equal(file1, file2 string) (bool, error) {
 	}
 	defer f2.Close()
 
-	b1 := make([]byte, BufferSize)
-	b2 := make([]byte, BufferSize)
+	ptr1 := getBuffer()
+	defer putBuffer(ptr1)
+	b1 := *ptr1
+
+	ptr2 := getBuffer()
+	defer putBuffer(ptr2)
+	b2 := *ptr2
 
 	for {
 		n1, err1 := f1.Read(b1)
@@ -344,8 +373,11 @@ func Copy(src, dst string) error {
 	// enabling zero-copy system calls like copy_file_range/sendfile on Linux,
 	// but falls back to user-configured BufferSize on macOS and Windows
 	// instead of io.Copy's internal 32KB default.
+	ptr := getBuffer()
+	defer putBuffer(ptr)
+
 	// Copy the file
-	if _, err := io.CopyBuffer(destFile, sourceFile, make([]byte, BufferSize)); err != nil {
+	if _, err := io.CopyBuffer(destFile, sourceFile, *ptr); err != nil {
 		destFile.Close()
 		return fmt.Errorf("copying file content: %w", err)
 	}
