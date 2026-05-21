@@ -1,0 +1,4 @@
+## 2024-05-21 - Fix TOCTOU Vulnerability in File Copy
+**Vulnerability:** The `Copy` function was vulnerable to TOCTOU symlink attacks because it used `os.OpenFile(dst, ...)` directly.
+**Learning:** In Go, to prevent TOCTOU vulnerabilities during file writes/copies without breaking overwrite functionality, we must use an atomic write pattern: create a temporary file in the destination directory, write the data, explicitly apply file permissions using `Chmod`, and finally perform an atomic `os.Rename()` to the final destination.
+**Prevention:** Avoid opening destination files directly for write. Always use the atomic write pattern (temp file + rename) for secure file replacements, and robustly handle `defer` cleanups by carefully managing the `nil` state of the temporary file pointer on errors.
