@@ -1,0 +1,4 @@
+## 2024-05-28 - TOCTOU in file copy
+**Vulnerability:** The `Copy` function in `fileflow.go` creates files using `os.OpenFile(dst, os.O_RDWR|os.O_CREATE|os.O_TRUNC, sourceInfo.Mode())`. This is susceptible to Time-of-Check to Time-of-Use (TOCTOU) symlink vulnerabilities because `dst` could be replaced by a symlink after any previous checks and before `os.OpenFile` is called, potentially overwriting arbitrary files.
+**Learning:** `os.O_EXCL` breaks overwrite functionality. To securely overwrite files while preventing TOCTOU symlink vulnerabilities, use an atomic write pattern: write to a temporary file (`os.CreateTemp`) in the destination directory, apply original permissions (`Chmod`), write contents, sync, close, and atomically `os.Rename` it over the intended destination.
+**Prevention:** Always use atomic writes (temp file + rename) for file replacements or copies over potentially existing files, avoiding direct `os.OpenFile` with truncation.
