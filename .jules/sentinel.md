@@ -1,0 +1,4 @@
+## 2026-06-01 - Prevent TOCTOU symlink vulnerabilities in file copies
+**Vulnerability:** File copy operations used `os.OpenFile` with a known destination path, creating a TOCTOU (Time-of-Check to Time-of-Use) window where an attacker could swap the destination file with a symlink before the open operation completes, potentially overwriting sensitive files.
+**Learning:** Using `os.O_EXCL` breaks overwrite functionality. To maintain overwrite support while preventing TOCTOU symlink attacks, an atomic write pattern is necessary: write to a temporary file in the same directory (`os.CreateTemp(filepath.Dir(dst), ...)`), apply permissions, and atomically rename it (`os.Rename()`).
+**Prevention:** Always use atomic writes (temp file + rename) for predictable file writes/overwrites. Ensure robust cleanup with deferred functions and explicit file reference clearing (e.g., `destFile = nil`) after successful closure before renaming to prevent resource leaks.
