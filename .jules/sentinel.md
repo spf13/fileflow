@@ -1,0 +1,4 @@
+## 2024-06-02 - Prevent TOCTOU symlink vulnerabilities in Copy
+**Vulnerability:** TOCTOU (Time-of-Check to Time-of-Use) symlink vulnerability when copying files via `os.OpenFile` with `O_TRUNC`. The destination file check and the file overwrite are not atomic.
+**Learning:** In Go, replacing an existing file with `os.OpenFile` and `O_TRUNC` leaves a window where the file could be replaced with a symlink before it's opened. We should use an atomic write pattern with a temporary file and `os.Rename`.
+**Prevention:** Use `os.CreateTemp` to create a temporary file in the destination directory, write to it, and atomically replace the destination with `os.Rename`. Also explicitly set the mode of the temp file via `Chmod` before moving. Ensure temp file cleanup and prevent double closing on successful rename.
