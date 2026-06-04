@@ -24,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -201,6 +202,30 @@ func Exists(path string) bool {
 	return err == nil && !info.IsDir()
 }
 
+
+var bufferPool = sync.Pool{
+	New: func() interface{} {
+		size := BufferSize
+		b := make([]byte, size)
+		return &b
+	},
+}
+
+func getBuffer() *[]byte {
+	size := BufferSize
+	p := bufferPool.Get().(*[]byte)
+	if cap(*p) < size {
+		*p = make([]byte, size)
+	} else {
+		*p = (*p)[:size]
+	}
+	return p
+}
+
+func putBuffer(p *[]byte) {
+	bufferPool.Put(p)
+}
+
 var incrementPattern = regexp.MustCompile(`-\d+$`)
 
 // FindAvailableNameInc returns an available filename by incrementing a counter
@@ -262,8 +287,14 @@ func Equal(file1, file2 string) (bool, error) {
 	}
 	defer f2.Close()
 
-	b1 := make([]byte, BufferSize)
-	b2 := make([]byte, BufferSize)
+	// Optimization: Use sync.Pool to reuse byte slices and reduce allocations
+	p1 := getBuffer()
+	defer putBuffer(p1)
+	b1 := *p1
+
+	p2 := getBuffer()
+	defer putBuffer(p2)
+	b2 := *p2
 
 	for {
 		n1, err1 := f1.Read(b1)
@@ -345,7 +376,10 @@ func Copy(src, dst string) error {
 	// but falls back to user-configured BufferSize on macOS and Windows
 	// instead of io.Copy's internal 32KB default.
 	// Copy the file
-	if _, err := io.CopyBuffer(destFile, sourceFile, make([]byte, BufferSize)); err != nil {
+	// Optimization: Use sync.Pool to reuse byte slices and reduce allocations
+	p := getBuffer()
+	defer putBuffer(p)
+	if _, err := io.CopyBuffer(destFile, sourceFile, *p); err != nil {
 		destFile.Close()
 		return fmt.Errorf("copying file content: %w", err)
 	}
