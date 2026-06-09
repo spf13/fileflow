@@ -220,9 +220,9 @@ func FindAvailableNameInc(baseName string) (string, error) {
 	return "", ErrMaxAttemptsReached
 }
 
-// bufferPool reuses large []byte buffers across file operations to reduce
-// allocations and GC pressure. Buffers are stored as *[]byte to avoid the
-// interface-boxing allocation that occurs when storing a slice directly.
+
+// ⚡ Bolt: Use a package-level sync.Pool to reuse large []byte buffers
+// reducing memory allocations and GC pressure during repeated file operations.
 var bufferPool = sync.Pool{
 	New: func() interface{} {
 		size := BufferSize
@@ -231,10 +231,10 @@ var bufferPool = sync.Pool{
 	},
 }
 
-// getBuffer retrieves a buffer from the pool sized to the current BufferSize.
-// If BufferSize has grown since the buffer was pooled, a new buffer is allocated.
-// If BufferSize has shrunk, the existing (oversized) buffer is reused — pool
-// contents reflect peak BufferSize seen during the process lifetime.
+// getBuffer safely retrieves a buffer from the pool, ensuring it meets the
+// current BufferSize requirement (which can be modified at runtime).
+// Note: If BufferSize is reduced at runtime, oversized buffers may be silently
+// retained and reused to avoid allocations, capping max retained size to peak usage.
 func getBuffer() *[]byte {
 	size := BufferSize
 	p := bufferPool.Get().(*[]byte)
