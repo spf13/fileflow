@@ -334,7 +334,9 @@ func Copy(src, dst string) error {
 		return fmt.Errorf("getting source file info: %w", err)
 	}
 
-	// Prevent TOCTOU symlink vulnerability: create a temporary file in the destination directory
+	// Use an atomic write pattern (CreateTemp -> write -> Sync -> Close -> Rename)
+	// to ensure readers never see a partially-written file, and a mid-write crash
+	// cannot corrupt the destination.
 	destFile, err := os.CreateTemp(filepath.Dir(dst), ".*.tmp")
 	if err != nil {
 		return fmt.Errorf("creating temporary destination file: %w", err)
@@ -367,10 +369,12 @@ func Copy(src, dst string) error {
 		return fmt.Errorf("syncing file: %w", err)
 	}
 
-	if err := destFile.Close(); err != nil {
+	f := destFile
+	destFile = nil
+	if err := f.Close(); err != nil {
+		os.Remove(tmpName)
 		return fmt.Errorf("closing destination file: %w", err)
 	}
-	destFile = nil
 
 	if err := os.Rename(tmpName, dst); err != nil {
 		os.Remove(tmpName)
