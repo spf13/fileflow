@@ -24,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -219,6 +220,36 @@ func FindAvailableNameInc(baseName string) (string, error) {
 	return "", ErrMaxAttemptsReached
 }
 
+
+// ⚡ Bolt: Use a package-level sync.Pool to reuse large []byte buffers
+// reducing memory allocations and GC pressure during repeated file operations.
+var bufferPool = sync.Pool{
+	New: func() interface{} {
+		size := BufferSize
+		b := make([]byte, size)
+		return &b
+	},
+}
+
+// getBuffer safely retrieves a buffer from the pool, ensuring it meets the
+// current BufferSize requirement (which can be modified at runtime).
+// Note: If BufferSize is reduced at runtime, oversized buffers may be silently
+// retained and reused to avoid allocations, capping max retained size to peak usage.
+func getBuffer() *[]byte {
+	size := BufferSize
+	p := bufferPool.Get().(*[]byte)
+	if cap(*p) < size {
+		b := make([]byte, size)
+		return &b
+	}
+	*p = (*p)[:size]
+	return p
+}
+
+func putBuffer(p *[]byte) {
+	bufferPool.Put(p)
+}
+
 func FindAvailableNameTS(baseName string) (string, error) {
 	ext := filepath.Ext(baseName)
 	nameWOExt := baseName[:len(baseName)-len(ext)]
@@ -262,8 +293,13 @@ func Equal(file1, file2 string) (bool, error) {
 	}
 	defer f2.Close()
 
-	b1 := make([]byte, BufferSize)
-	b2 := make([]byte, BufferSize)
+	p1 := getBuffer()
+	defer putBuffer(p1)
+	b1 := *p1
+
+	p2 := getBuffer()
+	defer putBuffer(p2)
+	b2 := *p2
 
 	for {
 		n1, err1 := f1.Read(b1)
@@ -340,12 +376,15 @@ func Copy(src, dst string) error {
 		return fmt.Errorf("creating destination file: %w", err)
 	}
 
+	pBuf := getBuffer()
+	defer putBuffer(pBuf)
+
 	// Use io.CopyBuffer instead of io.Copy. This still calls destFile.ReadFrom()
 	// enabling zero-copy system calls like copy_file_range/sendfile on Linux,
 	// but falls back to user-configured BufferSize on macOS and Windows
 	// instead of io.Copy's internal 32KB default.
 	// Copy the file
-	if _, err := io.CopyBuffer(destFile, sourceFile, make([]byte, BufferSize)); err != nil {
+	if _, err := io.CopyBuffer(destFile, sourceFile, *pBuf); err != nil {
 		destFile.Close()
 		return fmt.Errorf("copying file content: %w", err)
 	}
