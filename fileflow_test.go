@@ -18,7 +18,6 @@ package fileflow
 import (
 	"bytes"
 	"errors"
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -89,28 +88,26 @@ func TestRenameSameFileDifferentPath(t *testing.T) {
 
 func TestIdenticalFiles(t *testing.T) {
 	// Set up test files
-	file1 := "test_file1.txt"
-	file2 := "test_file2.txt"
-	file3 := "test_file3.txt"
+	tempDir := t.TempDir()
+	file1 := filepath.Join(tempDir, "test_file1.txt")
+	file2 := filepath.Join(tempDir, "test_file2.txt")
+	file3 := filepath.Join(tempDir, "test_file3.txt")
 
 	content := []byte("Hello World")
 	diffContent := []byte("Hello World!")
 
 	// Create test files
-	if err := ioutil.WriteFile(file1, content, 0644); err != nil {
+	if err := os.WriteFile(file1, content, 0644); err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove(file1)
 
-	if err := ioutil.WriteFile(file2, content, 0644); err != nil {
+	if err := os.WriteFile(file2, content, 0644); err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove(file2)
 
-	if err := ioutil.WriteFile(file3, diffContent, 0644); err != nil {
+	if err := os.WriteFile(file3, diffContent, 0644); err != nil {
 		t.Fatal(err)
 	}
-	defer os.Remove(file3)
 
 	tests := []struct {
 		fileA, fileB string
@@ -135,17 +132,13 @@ func TestIdenticalFiles(t *testing.T) {
 
 func TestCopy(t *testing.T) {
 	// Create a temporary directory for test files
-	tempDir, err := ioutil.TempDir("", "test_copyfile")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tempDir)
+	tempDir := t.TempDir()
 
 	srcPath := filepath.Join(tempDir, "source.txt")
 	dstPath := filepath.Join(tempDir, "dest.txt")
 	content := []byte("Hello World")
 
-	if err := ioutil.WriteFile(srcPath, content, 0644); err != nil {
+	if err := os.WriteFile(srcPath, content, 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -153,45 +146,7 @@ func TestCopy(t *testing.T) {
 		t.Fatalf("CopyFile() error: %v", err)
 	}
 
-	dstContent, err := ioutil.ReadFile(dstPath)
-	if err != nil {
-		t.Fatalf("Reading destination file error: %v", err)
-	}
-
-	if !bytes.Equal(content, dstContent) {
-		t.Errorf("Destination file content = %s; want %s", dstContent, content)
-	}
-}
-
-func TestMoveFile(t *testing.T) {
-	tempDir, err := ioutil.TempDir("", "test_safemove")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tempDir)
-
-	srcPath := filepath.Join(tempDir, "source.txt")
-	dstPath := filepath.Join(tempDir, "dest.txt")
-	content := []byte("Hello World")
-
-	if err := ioutil.WriteFile(srcPath, content, 0644); err != nil {
-		t.Fatal(err)
-	}
-
-	finalDst, err := Move(srcPath, dstPath)
-	if err != nil {
-		t.Fatalf("SafeMoveFile() error: %v", err)
-	}
-
-	if finalDst != dstPath {
-		t.Errorf("SafeMoveFile() = %v; want %v", finalDst, dstPath)
-	}
-
-	if _, err := os.Stat(srcPath); !os.IsNotExist(err) {
-		t.Errorf("Source file still exists after move")
-	}
-
-	dstContent, err := ioutil.ReadFile(dstPath)
+	dstContent, err := os.ReadFile(dstPath)
 	if err != nil {
 		t.Fatalf("Reading destination file error: %v", err)
 	}
@@ -202,16 +157,12 @@ func TestMoveFile(t *testing.T) {
 }
 
 func TestExists(t *testing.T) {
-	tempDir, err := ioutil.TempDir("", "test_fileexists")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tempDir)
+	tempDir := t.TempDir()
 
 	existingFile := filepath.Join(tempDir, "exists.txt")
 	nonExistingFile := filepath.Join(tempDir, "does_not_exist.txt")
 
-	if err := ioutil.WriteFile(existingFile, []byte("Hello"), 0644); err != nil {
+	if err := os.WriteFile(existingFile, []byte("Hello"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -232,17 +183,13 @@ func TestExists(t *testing.T) {
 }
 
 func TestMove(t *testing.T) {
-	tempDir, err := ioutil.TempDir("", "test_safemoveefficient")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tempDir)
+	tempDir := t.TempDir()
 
 	srcPath := filepath.Join(tempDir, "source.txt")
 	dstPath := filepath.Join(tempDir, "dest.txt")
 	content := []byte("Hello World")
 
-	if err := ioutil.WriteFile(srcPath, content, 0644); err != nil {
+	if err := os.WriteFile(srcPath, content, 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -259,7 +206,7 @@ func TestMove(t *testing.T) {
 		t.Errorf("Source file still exists after move")
 	}
 
-	dstContent, err := ioutil.ReadFile(dstPath)
+	dstContent, err := os.ReadFile(dstPath)
 	if err != nil {
 		t.Fatalf("Reading destination file error: %v", err)
 	}
@@ -270,16 +217,12 @@ func TestMove(t *testing.T) {
 }
 
 func TestCustomFindAvailableName(t *testing.T) {
-	tempDir, err := ioutil.TempDir("", "test_customfindavailablename")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tempDir)
+	tempDir := t.TempDir()
 
 	baseName := filepath.Join(tempDir, "testfile.txt")
 
 	// Create a file to ensure the name needs to be incremented
-	if err := ioutil.WriteFile(baseName, []byte("Hello World"), 0644); err != nil {
+	if err := os.WriteFile(baseName, []byte("Hello World"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -290,6 +233,7 @@ func TestCustomFindAvailableName(t *testing.T) {
 
 	// Set the custom function
 	FindAvailableName = customFindAvailableName
+	t.Cleanup(func() { FindAvailableName = FindAvailableNameInc })
 
 	newName, err := FindAvailableName(baseName)
 	if err != nil {
@@ -300,22 +244,15 @@ func TestCustomFindAvailableName(t *testing.T) {
 	if newName != expectedName {
 		t.Errorf("CustomFindAvailableName() = %v; want %v", newName, expectedName)
 	}
-
-	// Reset FindAvailableName to default
-	FindAvailableName = FindAvailableNameInc
 }
 
 func TestFindAvailableNameInc(t *testing.T) {
-	tempDir, err := ioutil.TempDir("", "test_findavailablenameinc")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tempDir)
+	tempDir := t.TempDir()
 
 	baseName := filepath.Join(tempDir, "testfile.txt")
 
 	// Create a file to ensure the name needs to be incremented
-	if err := ioutil.WriteFile(baseName, []byte("Hello World"), 0644); err != nil {
+	if err := os.WriteFile(baseName, []byte("Hello World"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -330,7 +267,7 @@ func TestFindAvailableNameInc(t *testing.T) {
 	}
 
 	// Create -1 file and test -2
-	if err := ioutil.WriteFile(newName, []byte("Hello World"), 0644); err != nil {
+	if err := os.WriteFile(newName, []byte("Hello World"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -346,7 +283,7 @@ func TestFindAvailableNameInc(t *testing.T) {
 
 	// Test file without extension
 	baseNameNoExt := filepath.Join(tempDir, "testfile")
-	if err := ioutil.WriteFile(baseNameNoExt, []byte("Hello World"), 0644); err != nil {
+	if err := os.WriteFile(baseNameNoExt, []byte("Hello World"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -362,16 +299,12 @@ func TestFindAvailableNameInc(t *testing.T) {
 }
 
 func TestFindAvailableNameTS(t *testing.T) {
-	tempDir, err := ioutil.TempDir("", "test_findavailablenamets")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(tempDir)
+	tempDir := t.TempDir()
 
 	baseName := filepath.Join(tempDir, "testfile.txt")
 
 	// Create initial file
-	if err := ioutil.WriteFile(baseName, []byte("Hello World"), 0644); err != nil {
+	if err := os.WriteFile(baseName, []byte("Hello World"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -389,7 +322,7 @@ func TestFindAvailableNameTS(t *testing.T) {
 	}
 
 	// Create file with first timestamp and test second timestamp
-	if err := ioutil.WriteFile(newName, []byte("Hello World"), 0644); err != nil {
+	if err := os.WriteFile(newName, []byte("Hello World"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -398,14 +331,14 @@ func TestFindAvailableNameTS(t *testing.T) {
 		t.Fatalf("FindAvailableNameTS() second call error: %v, firstname: %v", err, newName)
 	}
 
-	// Verify increment part is 2
+	// Verify the second name follows the timestamp pattern
 	if !tsPattern.MatchString(newName2) {
-		t.Errorf("FindAvailableNameTS() = %v; want timestamp suffix matching patterh %v", newName2, tsPattern)
+		t.Errorf("FindAvailableNameTS() = %v; want timestamp suffix matching pattern %v", newName2, tsPattern)
 	}
 
 	// Test file without extension
 	baseNameNoExt := filepath.Join(tempDir, "testfile")
-	if err := ioutil.WriteFile(baseNameNoExt, []byte("Hello World"), 0644); err != nil {
+	if err := os.WriteFile(baseNameNoExt, []byte("Hello World"), 0644); err != nil {
 		t.Fatal(err)
 	}
 
