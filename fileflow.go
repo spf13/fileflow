@@ -29,8 +29,6 @@ import (
 const (
 	// DefaultBufferSize is the default buffer size used for file operations
 	DefaultBufferSize = 32 * 1024 // 32KB buffer
-	// DefaultFileMode is the default permission mode for new files
-	DefaultFileMode = 0644
 	// DefaultDirMode is the default permission mode for new directories
 	DefaultDirMode = 0755
 )
@@ -38,11 +36,9 @@ const (
 var (
 	ErrSameFile           = errors.New("source and destination are the same")
 	ErrMaxAttemptsReached = errors.New("maximum increment attempts reached")
-	ErrLockTimeout        = errors.New("timeout acquiring file lock")
 	// MaxIncrementAttempts is the maximum number of attempts to increment a filename
 	MaxIncrementAttempts             = 100               // user can override this value
 	BufferSize                       = DefaultBufferSize // user can override this value
-	FileMode             fs.FileMode = DefaultFileMode   // user can override this value
 	DirMode              fs.FileMode = DefaultDirMode    // user can override this value
 
 	// FindAvailableName is the function used to find an available filename
@@ -64,21 +60,6 @@ func (e *ErrFailedRemovingOriginal) Error() string {
 }
 
 func (e *ErrFailedRemovingOriginal) Unwrap() error {
-	return e.err
-}
-
-// ErrFailedCopyingFile occurs when a file copy operation fails
-type ErrFailedCopyingFile struct {
-	err error
-	src string
-	dst string
-}
-
-func (e *ErrFailedCopyingFile) Error() string {
-	return fmt.Sprintf("failed copying file %v to %v: %v", e.src, e.dst, e.err)
-}
-
-func (e *ErrFailedCopyingFile) Unwrap() error {
 	return e.err
 }
 
@@ -161,7 +142,7 @@ func Rename(src, dst string) (string, error) {
 		}
 	}
 
-	if err := os.MkdirAll(filepath.Dir(dst), DefaultDirMode); err != nil {
+	if err := os.MkdirAll(filepath.Dir(dst), DirMode); err != nil {
 		return "", fmt.Errorf("creating destination directory: %w", err)
 	}
 

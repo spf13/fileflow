@@ -101,7 +101,6 @@ fileflow.FindAvailableName = customNamingStrategy
 The package includes custom error types to provide detailed error information:
 
 * ErrFailedRemovingOriginal: Indicates failure to remove the original file after copying.
-* ErrFailedCopyingFile: Indicates failure to copy a file to a new location.
 * ErrFailedMovingFile: Indicates failure to move a file from the source to the destination.
 
 Each error type includes relevant file path information to help with debugging.
