@@ -143,6 +143,98 @@ func TestFileMoveIdenticalRemovesSrc(t *testing.T) {
 	}
 }
 
+func TestFileMoveConflict(t *testing.T) {
+	tempDir := t.TempDir()
+	src := filepath.Join(tempDir, "source.txt")
+	dst := filepath.Join(tempDir, "dest.txt")
+	srcContent := []byte("source content")
+	dstContent := []byte("destination content")
+
+	if err := os.WriteFile(src, srcContent, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dst, dstContent, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	final, err := fileMove(src, dst)
+	if err != nil {
+		t.Fatalf("fileMove() error: %v", err)
+	}
+	want := filepath.Join(tempDir, "dest-1.txt")
+	if final != want {
+		t.Errorf("fileMove() = %v; want %v", final, want)
+	}
+	if _, err := os.Stat(src); !os.IsNotExist(err) {
+		t.Errorf("source still exists after fileMove(): %v", err)
+	}
+
+	got, err := os.ReadFile(final)
+	if err != nil {
+		t.Fatalf("reading fileMove() destination: %v", err)
+	}
+	if !bytes.Equal(got, srcContent) {
+		t.Errorf("fileMove() destination content = %q; want %q", got, srcContent)
+	}
+	original, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatalf("reading original destination after fileMove(): %v", err)
+	}
+	if !bytes.Equal(original, dstContent) {
+		t.Errorf("original destination content after fileMove() = %q; want %q", original, dstContent)
+	}
+}
+
+func TestMoveSameFileError(t *testing.T) {
+	tempDir := t.TempDir()
+	path := filepath.Join(tempDir, "a.txt")
+	content := []byte("do not lose me")
+
+	if err := os.WriteFile(path, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+	final, err := Move(path, path)
+	if !errors.Is(err, ErrSameFile) {
+		t.Errorf("Move() error = %v; want %v", err, ErrSameFile)
+	}
+	if final != "" {
+		t.Errorf("Move() = %q; want empty string", final)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("file missing after Move() onto itself: %v", err)
+	}
+	if !bytes.Equal(got, content) {
+		t.Errorf("file content after Move() onto itself = %q; want %q", got, content)
+	}
+}
+
+func TestRenameSameFileError(t *testing.T) {
+	tempDir := t.TempDir()
+	path := filepath.Join(tempDir, "a.txt")
+	content := []byte("do not lose me")
+
+	if err := os.WriteFile(path, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+	final, err := Rename(path, path)
+	if !errors.Is(err, ErrSameFile) {
+		t.Errorf("Rename() error = %v; want %v", err, ErrSameFile)
+	}
+	if final != "" {
+		t.Errorf("Rename() = %q; want empty string", final)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("file missing after Rename() onto itself: %v", err)
+	}
+	if !bytes.Equal(got, content) {
+		t.Errorf("file content after Rename() onto itself = %q; want %q", got, content)
+	}
+}
+
 func TestMoveSameFileDifferentPath(t *testing.T) {
 	// Moving a file onto itself via a differently-spelled path must not
 	// destroy the file. E.g. "dir/./a.txt" -> "dir/a.txt".
@@ -161,11 +253,11 @@ func TestMoveSameFileDifferentPath(t *testing.T) {
 	}
 
 	final, err := Move(src, dst)
-	if err != nil && !errors.Is(err, ErrSameFile) {
-		t.Fatalf("Move() unexpected error: %v", err)
+	if !errors.Is(err, ErrSameFile) {
+		t.Errorf("Move() error = %v; want %v", err, ErrSameFile)
 	}
-	if err == nil && final != dst {
-		t.Errorf("Move() = %v; want %v", final, dst)
+	if final != "" {
+		t.Errorf("Move() = %q; want empty string", final)
 	}
 
 	// The file must still exist with its content intact.
@@ -545,6 +637,14 @@ func TestExists(t *testing.T) {
 	}
 }
 
+func TestExistsOnDirectory(t *testing.T) {
+	tempDir := t.TempDir()
+
+	if Exists(tempDir) {
+		t.Errorf("Exists(%q) = true for a directory; want false", tempDir)
+	}
+}
+
 func TestMove(t *testing.T) {
 	tempDir := t.TempDir()
 
@@ -576,6 +676,141 @@ func TestMove(t *testing.T) {
 
 	if !bytes.Equal(content, dstContent) {
 		t.Errorf("Destination file content = %s; want %s", dstContent, content)
+	}
+}
+
+func TestMoveConflict(t *testing.T) {
+	tempDir := t.TempDir()
+	src := filepath.Join(tempDir, "source.txt")
+	dst := filepath.Join(tempDir, "dest.txt")
+	srcContent := []byte("source content")
+	dstContent := []byte("destination content")
+
+	if err := os.WriteFile(src, srcContent, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dst, dstContent, 0644); err != nil {
+		t.Fatal(err)
+	}
+	final, err := Move(src, dst)
+	if err != nil {
+		t.Fatalf("Move() error: %v", err)
+	}
+
+	want := filepath.Join(tempDir, "dest-1.txt")
+	if final != want {
+		t.Errorf("Move() = %v; want %v", final, want)
+	}
+	if _, err := os.Stat(src); !os.IsNotExist(err) {
+		t.Errorf("source still exists after Move(): %v", err)
+	}
+	got, err := os.ReadFile(final)
+	if err != nil {
+		t.Fatalf("reading Move() destination: %v", err)
+	}
+	if !bytes.Equal(got, srcContent) {
+		t.Errorf("Move() destination content = %q; want %q", got, srcContent)
+	}
+	original, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatalf("reading original destination after Move(): %v", err)
+	}
+	if !bytes.Equal(original, dstContent) {
+		t.Errorf("original destination content after Move() = %q; want %q", original, dstContent)
+	}
+}
+
+func TestMoveIdenticalDst(t *testing.T) {
+	tempDir := t.TempDir()
+	src := filepath.Join(tempDir, "source.txt")
+	dst := filepath.Join(tempDir, "dest.txt")
+	content := []byte("identical content")
+
+	if err := os.WriteFile(src, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dst, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+	final, err := Move(src, dst)
+	if err != nil {
+		t.Fatalf("Move() error: %v", err)
+	}
+	if final != dst {
+		t.Errorf("Move() = %v; want %v", final, dst)
+	}
+	if _, err := os.Stat(src); !os.IsNotExist(err) {
+		t.Errorf("source still exists after Move() to identical destination: %v", err)
+	}
+	got, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatalf("reading destination after Move(): %v", err)
+	}
+	if !bytes.Equal(got, content) {
+		t.Errorf("destination content after Move() = %q; want %q", got, content)
+	}
+}
+
+func TestRenameCreatesDirs(t *testing.T) {
+	tempDir := t.TempDir()
+	src := filepath.Join(tempDir, "source.txt")
+	dst := filepath.Join(tempDir, "nested", "nonexistent", "dir", "dest.txt")
+	content := []byte("rename me")
+
+	if err := os.WriteFile(src, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+	final, err := Rename(src, dst)
+	if err != nil {
+		t.Fatalf("Rename() error: %v", err)
+	}
+	if final != dst {
+		t.Errorf("Rename() = %v; want %v", final, dst)
+	}
+	got, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatalf("reading destination after Rename(): %v", err)
+	}
+	if !bytes.Equal(got, content) {
+		t.Errorf("destination content after Rename() = %q; want %q", got, content)
+	}
+}
+
+func TestRenameConflict(t *testing.T) {
+	tempDir := t.TempDir()
+	src := filepath.Join(tempDir, "source.txt")
+	dst := filepath.Join(tempDir, "dest.txt")
+	srcContent := []byte("source content")
+	dstContent := []byte("destination content")
+
+	if err := os.WriteFile(src, srcContent, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dst, dstContent, 0644); err != nil {
+		t.Fatal(err)
+	}
+	final, err := Rename(src, dst)
+	if err != nil {
+		t.Fatalf("Rename() error: %v", err)
+	}
+
+	want := filepath.Join(tempDir, "dest-1.txt")
+	if final != want {
+		t.Errorf("Rename() = %v; want %v", final, want)
+	}
+	got, err := os.ReadFile(final)
+	if err != nil {
+		t.Fatalf("reading Rename() destination: %v", err)
+	}
+	if !bytes.Equal(got, srcContent) {
+		t.Errorf("Rename() destination content = %q; want %q", got, srcContent)
+	}
+	original, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatalf("reading original destination after Rename(): %v", err)
+	}
+	if !bytes.Equal(original, dstContent) {
+		t.Errorf("original destination content after Rename() = %q; want %q", original, dstContent)
 	}
 }
 
@@ -692,6 +927,33 @@ func TestFindAvailableNameInc(t *testing.T) {
 	expectedPhoto := filepath.Join(tempDir, "photo-1-1.txt")
 	if newPhoto != expectedPhoto {
 		t.Errorf("FindAvailableNameInc() = %v; want %v", newPhoto, expectedPhoto)
+	}
+}
+
+func TestFindAvailableNameIncExhausted(t *testing.T) {
+	const maxAttempts = 3
+	oldMaxIncrementAttempts := MaxIncrementAttempts
+	MaxIncrementAttempts = maxAttempts
+	t.Cleanup(func() { MaxIncrementAttempts = oldMaxIncrementAttempts })
+
+	tempDir := t.TempDir()
+	baseName := filepath.Join(tempDir, "base.txt")
+	if err := os.WriteFile(baseName, []byte("base"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= maxAttempts; i++ {
+		name := filepath.Join(tempDir, fmt.Sprintf("base-%d.txt", i))
+		if err := os.WriteFile(name, []byte("conflict"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	got, err := FindAvailableNameInc(baseName)
+	if !errors.Is(err, ErrMaxAttemptsReached) {
+		t.Errorf("FindAvailableNameInc() error = %v; want %v", err, ErrMaxAttemptsReached)
+	}
+	if got != "" {
+		t.Errorf("FindAvailableNameInc() = %q; want empty string", got)
 	}
 }
 
