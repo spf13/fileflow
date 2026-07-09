@@ -18,11 +18,77 @@ package fileflow
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
+	"syscall"
 	"testing"
 )
+
+func TestIsCrossDeviceError(t *testing.T) {
+	exdevLink := &os.LinkError{Op: "rename", Err: syscall.EXDEV}
+
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{"exdev link error", exdevLink, true},
+		{"wrapped in ErrFailedMovingFile", &ErrFailedMovingFile{err: exdevLink, src: "a", dst: "b"}, true},
+		{"wrapped with fmt.Errorf", fmt.Errorf("moving: %w", exdevLink), true},
+		{"other error", errors.New("other"), false},
+		{"not exist", os.ErrNotExist, false},
+	}
+
+	for _, tt := range tests {
+		if got := isCrossDeviceError(tt.err); got != tt.want {
+			t.Errorf("isCrossDeviceError(%v) = %v; want %v", tt.err, got, tt.want)
+		}
+	}
+
+	if runtime.GOOS == "windows" {
+		notSameDevice := &os.LinkError{Op: "rename", Err: syscall.Errno(0x11)}
+		if got := isCrossDeviceError(notSameDevice); !got {
+			t.Errorf("isCrossDeviceError(ERROR_NOT_SAME_DEVICE) = %v; want true", got)
+		}
+	}
+}
+
+func TestFileMove(t *testing.T) {
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+
+	src := filepath.Join(srcDir, "source.txt")
+	dst := filepath.Join(dstDir, "dest.txt")
+	content := []byte("Hello World")
+
+	if err := os.WriteFile(src, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	final, err := fileMove(src, dst)
+	if err != nil {
+		t.Fatalf("fileMove() error: %v", err)
+	}
+
+	if final != dst {
+		t.Errorf("fileMove() = %v; want %v", final, dst)
+	}
+
+	if _, err := os.Stat(src); !os.IsNotExist(err) {
+		t.Errorf("source file still exists after fileMove")
+	}
+
+	got, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatalf("reading destination file error: %v", err)
+	}
+	if !bytes.Equal(got, content) {
+		t.Errorf("destination content = %q; want %q", got, content)
+	}
+}
 
 func TestMoveSameFileDifferentPath(t *testing.T) {
 	// Moving a file onto itself via a differently-spelled path must not

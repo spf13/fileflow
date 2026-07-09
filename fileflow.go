@@ -25,7 +25,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"syscall"
 	"time"
 )
 
@@ -127,8 +126,7 @@ func Move(src, dst string) (string, error) {
 
 	final, err := Rename(src, dst)
 	if err != nil {
-		var linkErr *os.LinkError
-		if errors.As(err, &linkErr) && linkErr.Err == syscall.EXDEV {
+		if isCrossDeviceError(err) {
 			// If the file is on a different drive, copy it instead
 			return fileMove(src, dst)
 		}
