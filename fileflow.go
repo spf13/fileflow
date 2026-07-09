@@ -180,9 +180,11 @@ func fileMove(src, dst string) (string, error) {
 		}
 	}
 
-	if err := CopyWithPaths(src, dst); err != nil {
+	final, err := CopyWithPaths(src, dst)
+	if err != nil {
 		return "", err
 	}
+	dst = final
 
 	if err := os.Remove(src); err != nil {
 		return dst, &ErrFailedRemovingOriginal{err: err, file: src}
@@ -280,10 +282,11 @@ func readersEqual(r1, r2 io.Reader) (bool, error) {
 }
 
 // CopyWithPaths copies a file from src to dst, creating any necessary paths.
-// Returns the final destination path.
-func CopyWithPaths(src, dst string) error {
+// Returns the final destination path, which may differ from dst if a naming
+// conflict was resolved.
+func CopyWithPaths(src, dst string) (string, error) {
 	if err := os.MkdirAll(filepath.Dir(dst), DirMode); err != nil {
-		return fmt.Errorf("creating destination directory: %w", err)
+		return "", fmt.Errorf("creating destination directory: %w", err)
 	}
 
 	return Copy(src, dst)
@@ -292,45 +295,47 @@ func CopyWithPaths(src, dst string) error {
 // Copy performs an efficient copy of a file from src to dst.
 // If the destination file exists and is identical, it returns early.
 // If the destination exists and is different, it finds an available name.
-func Copy(src, dst string) error {
+// It returns the final destination path written, which may differ from dst
+// when a naming conflict was resolved. On error it returns an empty path.
+func Copy(src, dst string) (string, error) {
 	if sameFile(src, dst) {
-		return ErrSameFile
+		return "", ErrSameFile
 	}
 
 	if Exists(dst) {
 		identical, err := Equal(src, dst)
 		if err != nil {
-			return fmt.Errorf("checking file identity: %w", err)
+			return "", fmt.Errorf("checking file identity: %w", err)
 		}
 
 		if identical {
-			return nil // File already exists and is identical
+			return dst, nil // File already exists and is identical
 		}
 
 		// Find an available filename
 		newDst, err := FindAvailableName(dst)
 		if err != nil {
-			return fmt.Errorf("finding available name: %w", err)
+			return "", fmt.Errorf("finding available name: %w", err)
 		}
 		dst = newDst
 	}
 
 	sourceFile, err := os.Open(src)
 	if err != nil {
-		return fmt.Errorf("opening source file: %w", err)
+		return "", fmt.Errorf("opening source file: %w", err)
 	}
 	defer sourceFile.Close()
 
 	// Get source file info for permissions
 	sourceInfo, err := sourceFile.Stat()
 	if err != nil {
-		return fmt.Errorf("getting source file info: %w", err)
+		return "", fmt.Errorf("getting source file info: %w", err)
 	}
 
 	// Create destination file with same permissions
 	destFile, err := os.OpenFile(dst, os.O_RDWR|os.O_CREATE|os.O_TRUNC, sourceInfo.Mode())
 	if err != nil {
-		return fmt.Errorf("creating destination file: %w", err)
+		return "", fmt.Errorf("creating destination file: %w", err)
 	}
 
 	// Use buffered writer for better performance
@@ -339,24 +344,24 @@ func Copy(src, dst string) error {
 	// Copy the file
 	if _, err := io.Copy(writer, sourceFile); err != nil {
 		destFile.Close()
-		return fmt.Errorf("copying file content: %w", err)
+		return "", fmt.Errorf("copying file content: %w", err)
 	}
 
 	// Ensure all buffered data is written
 	if err := writer.Flush(); err != nil {
 		destFile.Close()
-		return fmt.Errorf("flushing writer: %w", err)
+		return "", fmt.Errorf("flushing writer: %w", err)
 	}
 
 	// Ensure file is properly written to disk
 	if err := destFile.Sync(); err != nil {
 		destFile.Close()
-		return fmt.Errorf("syncing file: %w", err)
+		return "", fmt.Errorf("syncing file: %w", err)
 	}
 
 	if err := destFile.Close(); err != nil {
-		return fmt.Errorf("closing destination file: %w", err)
+		return "", fmt.Errorf("closing destination file: %w", err)
 	}
 
-	return nil
+	return dst, nil
 }

@@ -317,8 +317,13 @@ func TestCopy(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := Copy(srcPath, dstPath); err != nil {
-		t.Fatalf("CopyFile() error: %v", err)
+	final, err := Copy(srcPath, dstPath)
+	if err != nil {
+		t.Fatalf("Copy() error: %v", err)
+	}
+
+	if final != dstPath {
+		t.Errorf("Copy() = %v; want %v", final, dstPath)
 	}
 
 	dstContent, err := os.ReadFile(dstPath)
@@ -328,6 +333,94 @@ func TestCopy(t *testing.T) {
 
 	if !bytes.Equal(content, dstContent) {
 		t.Errorf("Destination file content = %s; want %s", dstContent, content)
+	}
+}
+
+func TestCopyConflictReturnsFinalPath(t *testing.T) {
+	tempDir := t.TempDir()
+
+	srcPath := filepath.Join(tempDir, "source.txt")
+	dstPath := filepath.Join(tempDir, "dest.txt")
+	srcContent := []byte("Hello World")
+	dstContent := []byte("Different content")
+
+	if err := os.WriteFile(srcPath, srcContent, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dstPath, dstContent, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	final, err := Copy(srcPath, dstPath)
+	if err != nil {
+		t.Fatalf("Copy() error: %v", err)
+	}
+
+	wantPath := filepath.Join(tempDir, "dest-1.txt")
+	if final != wantPath {
+		t.Errorf("Copy() = %v; want %v", final, wantPath)
+	}
+
+	got, err := os.ReadFile(final)
+	if err != nil {
+		t.Fatalf("reading final destination file error: %v", err)
+	}
+	if !bytes.Equal(got, srcContent) {
+		t.Errorf("final file content = %q; want %q", got, srcContent)
+	}
+
+	// Original destination must be untouched.
+	orig, err := os.ReadFile(dstPath)
+	if err != nil {
+		t.Fatalf("reading original destination file error: %v", err)
+	}
+	if !bytes.Equal(orig, dstContent) {
+		t.Errorf("original destination content = %q; want %q", orig, dstContent)
+	}
+}
+
+func TestCopyIdenticalReturnsDst(t *testing.T) {
+	tempDir := t.TempDir()
+
+	srcPath := filepath.Join(tempDir, "source.txt")
+	dstPath := filepath.Join(tempDir, "dest.txt")
+	content := []byte("Hello World")
+
+	if err := os.WriteFile(srcPath, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dstPath, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	final, err := Copy(srcPath, dstPath)
+	if err != nil {
+		t.Fatalf("Copy() error: %v", err)
+	}
+
+	if final != dstPath {
+		t.Errorf("Copy() = %v; want %v", final, dstPath)
+	}
+
+	if Exists(filepath.Join(tempDir, "dest-1.txt")) {
+		t.Errorf("Copy() created a -1 file for an identical destination")
+	}
+}
+
+func TestCopySamePath(t *testing.T) {
+	tempDir := t.TempDir()
+
+	srcPath := filepath.Join(tempDir, "source.txt")
+	if err := os.WriteFile(srcPath, []byte("Hello World"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	final, err := Copy(srcPath, srcPath)
+	if !errors.Is(err, ErrSameFile) {
+		t.Errorf("Copy() error = %v; want %v", err, ErrSameFile)
+	}
+	if final != "" {
+		t.Errorf("Copy() = %q; want empty string", final)
 	}
 }
 
