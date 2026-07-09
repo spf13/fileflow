@@ -231,18 +231,17 @@ func FindAvailableNameInc(baseName string) (string, error) {
 	return "", ErrMaxAttemptsReached
 }
 
+// FindAvailableNameTS returns an available filename by appending a timestamp.
 func FindAvailableNameTS(baseName string) (string, error) {
 	ext := filepath.Ext(baseName)
 	nameWOExt := baseName[:len(baseName)-len(ext)]
+	candidate := fmt.Sprintf("%s-%s%s", nameWOExt, time.Now().Format("20060102-150405.000000000"), ext)
 
-	for i := 1; i <= MaxIncrementAttempts; i++ {
-		newName := fmt.Sprintf("%s-%s%s", nameWOExt, time.Now().Format("20060102-150405.000000000"), ext)
-		if !Exists(newName) {
-			return newName, nil
-		}
+	if !Exists(candidate) {
+		return candidate, nil
 	}
 
-	return "", ErrMaxAttemptsReached
+	return FindAvailableNameInc(candidate)
 }
 
 // Equal compares two files and returns true if they have identical content

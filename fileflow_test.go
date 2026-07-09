@@ -561,4 +561,20 @@ func TestFindAvailableNameTS(t *testing.T) {
 	if !tsPatternNoExt.MatchString(newName3) {
 		t.Errorf("FindAvailableNameTS() = %v; want timestamp suffix without extension", newName3)
 	}
+
+	// Preserve the complete original name, including a trailing numeric suffix.
+	preservedBaseName := filepath.Join(tempDir, "myfile-2024.txt")
+	if err := os.WriteFile(preservedBaseName, []byte("Hello World"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	preservedName, err := FindAvailableNameTS(preservedBaseName)
+	if err != nil {
+		t.Fatalf("FindAvailableNameTS() preserved name error: %v", err)
+	}
+
+	preservedPattern := regexp.MustCompile(`^` + regexp.QuoteMeta(filepath.Join(tempDir, "myfile-2024-")) + `\d{8}-\d{6}\.\d{9}\.txt$`)
+	if !preservedPattern.MatchString(preservedName) {
+		t.Errorf("FindAvailableNameTS() = %v; want full original name preserved with timestamp", preservedName)
+	}
 }
