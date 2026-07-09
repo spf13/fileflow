@@ -17,7 +17,6 @@ package fileflow
 
 import (
 	"bufio"
-	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -279,26 +278,28 @@ func Equal(file1, file2 string) (bool, error) {
 	}
 	defer f2.Close()
 
-	b1 := make([]byte, BufferSize)
-	b2 := make([]byte, BufferSize)
+	return readersEqual(f1, f2)
+}
+
+func readersEqual(r1, r2 io.Reader) (bool, error) {
+	b1 := bufio.NewReader(r1)
+	b2 := bufio.NewReader(r2)
 
 	for {
-		n1, err1 := f1.Read(b1)
-		n2, err2 := f2.Read(b2)
-
-		if n1 != n2 || !bytes.Equal(b1[:n1], b2[:n2]) {
-			return false, nil
-		}
-
-		if err1 == io.EOF && err2 == io.EOF {
-			return true, nil
-		}
+		byte1, err1 := b1.ReadByte()
+		byte2, err2 := b2.ReadByte()
 
 		if err1 != nil && err1 != io.EOF {
 			return false, fmt.Errorf("reading first file: %w", err1)
 		}
 		if err2 != nil && err2 != io.EOF {
 			return false, fmt.Errorf("reading second file: %w", err2)
+		}
+		if err1 == io.EOF || err2 == io.EOF {
+			return err1 == io.EOF && err2 == io.EOF, nil
+		}
+		if byte1 != byte2 {
+			return false, nil
 		}
 	}
 }

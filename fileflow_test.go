@@ -19,6 +19,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -26,6 +27,18 @@ import (
 	"syscall"
 	"testing"
 )
+
+type shortReader struct {
+	r   io.Reader
+	max int
+}
+
+func (r shortReader) Read(p []byte) (int, error) {
+	if len(p) > r.max {
+		p = p[:r.max]
+	}
+	return r.r.Read(p)
+}
 
 func TestIsCrossDeviceError(t *testing.T) {
 	exdevLink := &os.LinkError{Op: "rename", Err: syscall.EXDEV}
@@ -193,6 +206,102 @@ func TestIdenticalFiles(t *testing.T) {
 		if result != tt.expected {
 			t.Errorf("IdenticalFiles(%q, %q) = %v; want %v", tt.fileA, tt.fileB, result, tt.expected)
 		}
+	}
+}
+
+func TestReadersEqualShortReads(t *testing.T) {
+	data := bytes.Repeat([]byte("fileflow short read test data\n"), 256)
+	different := append([]byte(nil), data...)
+	different[len(different)-1] ^= 0xff
+
+	tests := []struct {
+		name string
+		r1   io.Reader
+		r2   io.Reader
+		want bool
+	}{
+		{
+			name: "identical with one-byte reads",
+			r1:   shortReader{r: bytes.NewReader(data), max: 1},
+			r2:   bytes.NewReader(data),
+			want: true,
+		},
+		{
+			name: "identical with seven-byte reads",
+			r1:   bytes.NewReader(data),
+			r2:   shortReader{r: bytes.NewReader(data), max: 7},
+			want: true,
+		},
+		{
+			name: "different final byte",
+			r1:   shortReader{r: bytes.NewReader(data), max: 7},
+			r2:   bytes.NewReader(different),
+			want: false,
+		},
+		{
+			name: "one stream is a prefix",
+			r1:   shortReader{r: bytes.NewReader(data[:len(data)-1]), max: 1},
+			r2:   bytes.NewReader(data),
+			want: false,
+		},
+		{
+			name: "empty streams",
+			r1:   bytes.NewReader(nil),
+			r2:   bytes.NewReader(nil),
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := readersEqual(tt.r1, tt.r2)
+			if err != nil {
+				t.Fatalf("readersEqual() error: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("readersEqual() = %v; want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestEqualLargeFiles(t *testing.T) {
+	tempDir := t.TempDir()
+	file1 := filepath.Join(tempDir, "file1.bin")
+	file2 := filepath.Join(tempDir, "file2.bin")
+
+	data := make([]byte, 100*1024)
+	for i := range data {
+		data[i] = byte(i % 251)
+	}
+
+	if err := os.WriteFile(file1, data, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(file2, data, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	equal, err := Equal(file1, file2)
+	if err != nil {
+		t.Fatalf("Equal() error: %v", err)
+	}
+	if !equal {
+		t.Error("Equal() = false for identical large files; want true")
+	}
+
+	different := append([]byte(nil), data...)
+	different[len(different)-1] ^= 0xff
+	if err := os.WriteFile(file2, different, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	equal, err = Equal(file1, file2)
+	if err != nil {
+		t.Fatalf("Equal() error: %v", err)
+	}
+	if equal {
+		t.Error("Equal() = true for large files differing in final byte; want false")
 	}
 }
 
