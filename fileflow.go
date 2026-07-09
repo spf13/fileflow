@@ -27,8 +27,6 @@ import (
 )
 
 const (
-	// DefaultBufferSize is the default buffer size used for file operations
-	DefaultBufferSize = 32 * 1024 // 32KB buffer
 	// DefaultDirMode is the default permission mode for new directories
 	DefaultDirMode = 0755
 )
@@ -38,7 +36,6 @@ var (
 	ErrMaxAttemptsReached = errors.New("maximum increment attempts reached")
 	// MaxIncrementAttempts is the maximum number of attempts to increment a filename
 	MaxIncrementAttempts             = 100               // user can override this value
-	BufferSize                       = DefaultBufferSize // user can override this value
 	DirMode              fs.FileMode = DefaultDirMode    // user can override this value
 
 	// FindAvailableName is the function used to find an available filename
@@ -332,36 +329,39 @@ func Copy(src, dst string) (string, error) {
 		return "", fmt.Errorf("getting source file info: %w", err)
 	}
 
-	// Create destination file with same permissions
-	destFile, err := os.OpenFile(dst, os.O_RDWR|os.O_CREATE|os.O_TRUNC, sourceInfo.Mode())
+	tmp, err := os.CreateTemp(filepath.Dir(dst), ".fileflow-*")
 	if err != nil {
-		return "", fmt.Errorf("creating destination file: %w", err)
+		return "", fmt.Errorf("creating temporary destination file: %w", err)
 	}
+	tmpName := tmp.Name()
+	success := false
+	defer func() {
+		if !success {
+			tmp.Close()
+			os.Remove(tmpName)
+		}
+	}()
 
-	// Use buffered writer for better performance
-	writer := bufio.NewWriterSize(destFile, BufferSize)
-
-	// Copy the file
-	if _, err := io.Copy(writer, sourceFile); err != nil {
-		destFile.Close()
+	if _, err := io.Copy(tmp, sourceFile); err != nil {
 		return "", fmt.Errorf("copying file content: %w", err)
 	}
 
-	// Ensure all buffered data is written
-	if err := writer.Flush(); err != nil {
-		destFile.Close()
-		return "", fmt.Errorf("flushing writer: %w", err)
-	}
-
-	// Ensure file is properly written to disk
-	if err := destFile.Sync(); err != nil {
-		destFile.Close()
+	if err := tmp.Sync(); err != nil {
 		return "", fmt.Errorf("syncing file: %w", err)
 	}
 
-	if err := destFile.Close(); err != nil {
-		return "", fmt.Errorf("closing destination file: %w", err)
+	if err := os.Chmod(tmpName, sourceInfo.Mode()); err != nil {
+		return "", fmt.Errorf("setting destination file mode: %w", err)
 	}
 
+	if err := tmp.Close(); err != nil {
+		return "", fmt.Errorf("closing temporary destination file: %w", err)
+	}
+
+	if err := os.Rename(tmpName, dst); err != nil {
+		return "", fmt.Errorf("renaming temporary destination file: %w", err)
+	}
+
+	success = true
 	return dst, nil
 }

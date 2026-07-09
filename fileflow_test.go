@@ -336,6 +336,61 @@ func TestCopy(t *testing.T) {
 	}
 }
 
+func TestCopyPreservesMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skipf("mode bits are not faithfully represented on %s", runtime.GOOS)
+	}
+
+	tempDir := t.TempDir()
+	srcPath := filepath.Join(tempDir, "source.txt")
+	dstPath := filepath.Join(tempDir, "dest.txt")
+
+	if err := os.WriteFile(srcPath, []byte("Hello World"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Copy(srcPath, dstPath); err != nil {
+		t.Fatalf("Copy() error: %v", err)
+	}
+
+	info, err := os.Stat(dstPath)
+	if err != nil {
+		t.Fatalf("stat destination: %v", err)
+	}
+	if got, want := info.Mode().Perm(), os.FileMode(0600); got != want {
+		t.Errorf("destination mode = %v; want %v", got, want)
+	}
+}
+
+func TestCopyLeavesNoTempOnSuccess(t *testing.T) {
+	srcDir := t.TempDir()
+	dstDir := t.TempDir()
+	srcPath := filepath.Join(srcDir, "source.txt")
+	dstPath := filepath.Join(dstDir, "dest.txt")
+
+	if err := os.WriteFile(srcPath, []byte("Hello World"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Copy(srcPath, dstPath); err != nil {
+		t.Fatalf("Copy() error: %v", err)
+	}
+
+	temps, err := filepath.Glob(filepath.Join(dstDir, ".fileflow-*"))
+	if err != nil {
+		t.Fatalf("glob temp files: %v", err)
+	}
+	if len(temps) != 0 {
+		t.Errorf("temporary files left after Copy(): %v", temps)
+	}
+
+	entries, err := os.ReadDir(dstDir)
+	if err != nil {
+		t.Fatalf("read destination directory: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Name() != filepath.Base(dstPath) {
+		t.Errorf("destination directory entries = %v; want only %q", entries, filepath.Base(dstPath))
+	}
+}
+
 func TestCopyConflictReturnsFinalPath(t *testing.T) {
 	tempDir := t.TempDir()
 
