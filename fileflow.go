@@ -100,10 +100,28 @@ func (e *ErrFailedMovingFile) Unwrap() error {
 	return e.err
 }
 
+// sameFile reports whether src and dst refer to the same underlying file,
+// even when the paths are spelled differently (e.g. "./a" vs "a", symlinks,
+// or case differences on case-insensitive filesystems).
+func sameFile(src, dst string) bool {
+	if src == dst {
+		return true
+	}
+	srcInfo, err := os.Stat(src)
+	if err != nil {
+		return false
+	}
+	dstInfo, err := os.Stat(dst)
+	if err != nil {
+		return false
+	}
+	return os.SameFile(srcInfo, dstInfo)
+}
+
 // Move tries to move a file atomically using rename if possible,
 // falling back to copy+delete if files are on different filesystems.
 func Move(src, dst string) (string, error) {
-	if src == dst {
+	if sameFile(src, dst) {
 		return "", ErrSameFile
 	}
 
@@ -123,7 +141,7 @@ func Move(src, dst string) (string, error) {
 // Rename attempts to rename a file from src to dst, handling naming conflicts.
 // It returns the final destination path.
 func Rename(src, dst string) (string, error) {
-	if src == dst {
+	if sameFile(src, dst) {
 		return "", ErrSameFile
 	}
 
@@ -161,7 +179,7 @@ func Rename(src, dst string) (string, error) {
 // fileMove moves a file from src to dst, handling naming conflicts.
 // It ensures that the dst file is not overwritten unless it is identical to the src file.
 func fileMove(src, dst string) (string, error) {
-	if src == dst {
+	if sameFile(src, dst) {
 		return "", ErrSameFile
 	}
 
@@ -301,7 +319,7 @@ func CopyWithPaths(src, dst string) error {
 // If the destination file exists and is identical, it returns early.
 // If the destination exists and is different, it finds an available name.
 func Copy(src, dst string) error {
-	if src == dst {
+	if sameFile(src, dst) {
 		return ErrSameFile
 	}
 

@@ -17,12 +17,75 @@ package fileflow
 
 import (
 	"bytes"
+	"errors"
 	"io/ioutil"
 	"os"
 	"path/filepath"
 	"regexp"
 	"testing"
 )
+
+func TestMoveSameFileDifferentPath(t *testing.T) {
+	// Moving a file onto itself via a differently-spelled path must not
+	// destroy the file. E.g. "dir/./a.txt" -> "dir/a.txt".
+	tempDir := t.TempDir()
+
+	dst := filepath.Join(tempDir, "a.txt")
+	// Same file, different spelling. Built by hand so filepath.Join can't clean it.
+	src := tempDir + string(os.PathSeparator) + "." + string(os.PathSeparator) + "a.txt"
+	if src == dst {
+		t.Fatal("test bug: paths are spelled identically")
+	}
+
+	content := []byte("do not lose me")
+	if err := os.WriteFile(dst, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	final, err := Move(src, dst)
+	if err != nil && !errors.Is(err, ErrSameFile) {
+		t.Fatalf("Move() unexpected error: %v", err)
+	}
+	if err == nil && final != dst {
+		t.Errorf("Move() = %v; want %v", final, dst)
+	}
+
+	// The file must still exist with its content intact.
+	got, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatalf("file destroyed by Move onto itself: %v", err)
+	}
+	if !bytes.Equal(got, content) {
+		t.Errorf("file content = %q; want %q", got, content)
+	}
+}
+
+func TestRenameSameFileDifferentPath(t *testing.T) {
+	tempDir := t.TempDir()
+
+	dst := filepath.Join(tempDir, "a.txt")
+	src := tempDir + string(os.PathSeparator) + "." + string(os.PathSeparator) + "a.txt"
+	if src == dst {
+		t.Fatal("test bug: paths are spelled identically")
+	}
+
+	content := []byte("do not lose me")
+	if err := os.WriteFile(dst, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Rename(src, dst); err != nil && !errors.Is(err, ErrSameFile) {
+		t.Fatalf("Rename() unexpected error: %v", err)
+	}
+
+	got, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatalf("file destroyed by Rename onto itself: %v", err)
+	}
+	if !bytes.Equal(got, content) {
+		t.Errorf("file content = %q; want %q", got, content)
+	}
+}
 
 func TestIdenticalFiles(t *testing.T) {
 	// Set up test files
