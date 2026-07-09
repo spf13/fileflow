@@ -471,6 +471,40 @@ func TestFindAvailableNameInc(t *testing.T) {
 	if newName3 != expectedName3 {
 		t.Errorf("FindAvailableNameInc() no extension = %v; want %v", newName3, expectedName3)
 	}
+
+	// A user-supplied name with trailing digits must be preserved, not
+	// stripped. Collision on "report-2024.txt" must yield "report-2024-1.txt".
+	reportName := filepath.Join(tempDir, "report-2024.txt")
+	if err := os.WriteFile(reportName, []byte("Hello World"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	newReport, err := FindAvailableNameInc(reportName)
+	if err != nil {
+		t.Fatalf("FindAvailableNameInc() report error: %v", err)
+	}
+
+	expectedReport := filepath.Join(tempDir, "report-2024-1.txt")
+	if newReport != expectedReport {
+		t.Errorf("FindAvailableNameInc() = %v; want %v", newReport, expectedReport)
+	}
+
+	// A user-supplied name already ending in "-1" must be preserved too:
+	// collision on "photo-1.txt" must yield "photo-1-1.txt".
+	photoName := filepath.Join(tempDir, "photo-1.txt")
+	if err := os.WriteFile(photoName, []byte("Hello World"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	newPhoto, err := FindAvailableNameInc(photoName)
+	if err != nil {
+		t.Fatalf("FindAvailableNameInc() photo error: %v", err)
+	}
+
+	expectedPhoto := filepath.Join(tempDir, "photo-1-1.txt")
+	if newPhoto != expectedPhoto {
+		t.Errorf("FindAvailableNameInc() = %v; want %v", newPhoto, expectedPhoto)
+	}
 }
 
 func TestFindAvailableNameTS(t *testing.T) {
