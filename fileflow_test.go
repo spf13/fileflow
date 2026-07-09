@@ -103,6 +103,46 @@ func TestFileMove(t *testing.T) {
 	}
 }
 
+func TestFileMoveIdenticalRemovesSrc(t *testing.T) {
+	tempDir := t.TempDir()
+
+	src := filepath.Join(tempDir, "source.txt")
+	dst := filepath.Join(tempDir, "dest.txt")
+	content := []byte("Hello World")
+
+	if err := os.WriteFile(src, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dst, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	final, err := fileMove(src, dst)
+	if err != nil {
+		t.Fatalf("fileMove() error: %v", err)
+	}
+
+	if final != dst {
+		t.Errorf("fileMove() = %v; want %v", final, dst)
+	}
+
+	if _, err := os.Stat(src); !os.IsNotExist(err) {
+		t.Errorf("source file still exists after fileMove of identical file")
+	}
+
+	got, err := os.ReadFile(dst)
+	if err != nil {
+		t.Fatalf("reading destination file error: %v", err)
+	}
+	if !bytes.Equal(got, content) {
+		t.Errorf("destination content = %q; want %q", got, content)
+	}
+
+	if Exists(filepath.Join(tempDir, "dest-1.txt")) {
+		t.Errorf("fileMove() created a -1 file for an identical destination")
+	}
+}
+
 func TestMoveSameFileDifferentPath(t *testing.T) {
 	// Moving a file onto itself via a differently-spelled path must not
 	// destroy the file. E.g. "dir/./a.txt" -> "dir/a.txt".

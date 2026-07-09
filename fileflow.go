@@ -112,82 +112,66 @@ func Move(src, dst string) (string, error) {
 	return final, nil
 }
 
+// resolveDst decides where an operation on src may write. It returns the
+// destination path to use and whether dst already holds content identical
+// to src (in which case no write is needed).
+func resolveDst(src, dst string) (path string, identical bool, err error) {
+	if sameFile(src, dst) {
+		return "", false, ErrSameFile
+	}
+	if !Exists(dst) {
+		return dst, false, nil
+	}
+	same, err := Equal(src, dst)
+	if err != nil {
+		return "", false, fmt.Errorf("checking file identity: %w", err)
+	}
+	if same {
+		return dst, true, nil
+	}
+	path, err = FindAvailableName(dst)
+	if err != nil {
+		return "", false, fmt.Errorf("finding available name: %w", err)
+	}
+	return path, false, nil
+}
+
 // Rename attempts to rename a file from src to dst, handling naming conflicts.
 // It returns the final destination path.
 func Rename(src, dst string) (string, error) {
-	if sameFile(src, dst) {
-		return "", ErrSameFile
+	path, identical, err := resolveDst(src, dst)
+	if err != nil {
+		return "", err
 	}
 
-	if Exists(dst) {
-		identical, err := Equal(src, dst)
-		if err != nil {
-			return "", fmt.Errorf("checking file identity: %w", err)
+	if identical {
+		if err := os.Remove(src); err != nil {
+			return dst, &ErrFailedRemovingOriginal{err: err, file: src}
 		}
-
-		if identical {
-			if err := os.Remove(src); err != nil {
-				return dst, &ErrFailedRemovingOriginal{err: err, file: src}
-			}
-			return dst, nil
-		}
-
-		// Find an available filename
-		dst, err = FindAvailableName(dst)
-		if err != nil {
-			return "", fmt.Errorf("finding available name: %w", err)
-		}
+		return dst, nil
 	}
 
-	if err := os.MkdirAll(filepath.Dir(dst), DirMode); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), DirMode); err != nil {
 		return "", fmt.Errorf("creating destination directory: %w", err)
 	}
 
-	if err := os.Rename(src, dst); err != nil {
-		return "", &ErrFailedMovingFile{err: err, src: src, dst: dst}
+	if err := os.Rename(src, path); err != nil {
+		return "", &ErrFailedMovingFile{err: err, src: src, dst: path}
 	}
 
-	return dst, nil
+	return path, nil
 }
 
-// fileMove moves a file from src to dst, handling naming conflicts.
-// It ensures that the dst file is not overwritten unless it is identical to the src file.
+// fileMove moves a file across filesystems by copy + remove.
 func fileMove(src, dst string) (string, error) {
-	if sameFile(src, dst) {
-		return "", ErrSameFile
-	}
-
-	if Exists(dst) {
-		identical, err := Equal(src, dst)
-		if err != nil {
-			return "", fmt.Errorf("checking file identity: %w", err)
-		}
-
-		if identical {
-			if err := os.Remove(src); err != nil {
-				return dst, &ErrFailedRemovingOriginal{err: err, file: src}
-			}
-			return dst, nil
-		}
-
-		// Find an available filename
-		dst, err = FindAvailableName(dst)
-		if err != nil {
-			return "", fmt.Errorf("finding available name: %w", err)
-		}
-	}
-
 	final, err := CopyWithPaths(src, dst)
 	if err != nil {
 		return "", err
 	}
-	dst = final
-
 	if err := os.Remove(src); err != nil {
-		return dst, &ErrFailedRemovingOriginal{err: err, file: src}
+		return final, &ErrFailedRemovingOriginal{err: err, file: src}
 	}
-
-	return dst, nil
+	return final, nil
 }
 
 // Exists returns true if the file exists and is accessible
@@ -295,27 +279,14 @@ func CopyWithPaths(src, dst string) (string, error) {
 // It returns the final destination path written, which may differ from dst
 // when a naming conflict was resolved. On error it returns an empty path.
 func Copy(src, dst string) (string, error) {
-	if sameFile(src, dst) {
-		return "", ErrSameFile
+	path, identical, err := resolveDst(src, dst)
+	if err != nil {
+		return "", err
 	}
-
-	if Exists(dst) {
-		identical, err := Equal(src, dst)
-		if err != nil {
-			return "", fmt.Errorf("checking file identity: %w", err)
-		}
-
-		if identical {
-			return dst, nil // File already exists and is identical
-		}
-
-		// Find an available filename
-		newDst, err := FindAvailableName(dst)
-		if err != nil {
-			return "", fmt.Errorf("finding available name: %w", err)
-		}
-		dst = newDst
+	if identical {
+		return dst, nil // File already exists and is identical
 	}
+	dst = path
 
 	sourceFile, err := os.Open(src)
 	if err != nil {
