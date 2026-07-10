@@ -89,12 +89,20 @@ if identical {
 ```
 
 ### FindAvailableName
-The package provides flexible naming strategies for handling file conflicts through the `FindAvailableName` variable. This variable holds a function that determines how to generate alternative filenames when a conflict occurs. The package includes two built-in implementations:
+FileFlow provides three naming strategies for handling conflicts. The default preserves the complete requested name before appending a counter; the continuation strategy treats a trailing `-N` as an existing counter. FileFlow cannot know whether trailing digits are a counter or meaningful data, so choose the behavior that fits your filenames.
 
 #### FindAvailableNameInc (Default)
-The default implementation appends `-1`, `-2`, and so on, up to `MaxIncrementAttempts` (100 by default), then returns `ErrMaxAttemptsReached`. Existing numeric endings are preserved:
+The default implementation always appends `-1`, `-2`, and so on. It tries up to 100 candidates, then returns `ErrMaxAttemptsReached`. Existing numeric endings are preserved:
 - For "document.txt", generates "document-1.txt", "document-2.txt", etc.
 - For "report-2024.txt", generates "report-2024-1.txt", not "report-1.txt".
+- For "file-1.txt", generates "file-1-1.txt".
+
+#### FindAvailableNameCont
+This implementation treats a trailing `-N` suffix as a counter and continues from `N+1`. If "file-1.txt", "file-2.txt", and "file-3.txt" exist, requesting "file-1.txt" yields "file-4.txt". A name without a trailing `-N` behaves like `FindAvailableNameInc`.
+
+This is useful for downloaded files: if one batch contains "file-1.txt", "file-2.txt", and "file-3.txt", a second batch can land as "file-4.txt", "file-5.txt", and "file-6.txt" instead of "file-1-1.txt", "file-2-1.txt", and "file-3-1.txt".
+
+Do not use this strategy when filenames end in meaningful digits. For example, "report-2024.txt" would continue as "report-2025.txt".
 
 #### FindAvailableNameTS
 An alternative implementation that appends one nanosecond-precision timestamp using the format `20060102-150405.000000000`:
@@ -124,23 +132,47 @@ func customNamingStrategy(baseName string) (string, error) {
     return "", fileflow.ErrMaxAttemptsReached
 }
 
-// Set the custom strategy
-fileflow.FindAvailableName = customNamingStrategy
+f := fileflow.Flow{FindAvailableName: customNamingStrategy}
+finalPath, err := f.Move("source.txt", "destination.txt")
 ```
 
-### Package configuration
+### Configuration with Flow
 
-The package has three tunable variables:
+`Flow` provides per-instance configuration for file operations:
 
-- `FindAvailableName`: conflict naming function; defaults to `FindAvailableNameInc`.
-- `MaxIncrementAttempts`: maximum incrementing suffix attempts; defaults to 100.
-- `DirMode`: permission mode used when creating destination directories; defaults to `0755`.
+```go
+type Flow struct {
+    FindAvailableName func(string) (string, error)
+    DirMode           fs.FileMode
+}
+```
+
+The zero value is ready to use. A nil `FindAvailableName` uses `FindAvailableNameInc`, and a zero `DirMode` uses `0755`. `Flow` has `Move`, `Rename`, `Copy`, and `CopyWithPaths` methods with the same signatures and behavior as the package-level functions.
+
+Configure a `Flow` before first use; do not mutate it concurrently with calls to its methods.
+
+```go
+f := fileflow.Flow{
+    FindAvailableName: fileflow.FindAvailableNameCont,
+    DirMode:           0700,
+}
+
+finalPath, err := f.Move("source.txt", "destination.txt")
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Println("File moved to:", finalPath)
+```
+
+The package-level `Move`, `Rename`, `Copy`, and `CopyWithPaths` functions remain available for simple usage and use the zero-value defaults. Per-instance `Flow` configuration replaces the mutable package globals from earlier versions; this is a breaking change.
+
+The maximum number of incrementing candidates is an internal constant of 100 and is not configurable.
 
 ## Error Handling
 The package exposes sentinel errors for `errors.Is`:
 
 * `ErrSameFile`: The source and destination refer to the same underlying file, including through different paths.
-* `ErrMaxAttemptsReached`: The incrementing naming strategy exhausted `MaxIncrementAttempts`.
+* `ErrMaxAttemptsReached`: The incrementing naming strategy exhausted its 100 attempts.
 
 It also exposes structured errors for `errors.As`; both unwrap their underlying cause:
 
