@@ -44,21 +44,10 @@ fmt.Println("File renamed to:", destination)
 ```
 
 ### Copy
-Copies src to dst and returns the final destination path. If dst exists with different content, the returned path contains the conflict suffix. If dst is identical, Copy is a no-op and returns dst. Copy expects the destination directory to exist.
+Copies src to dst and returns the final destination path, which may differ from dst after conflict resolution. If dst exists with different content, the returned path contains the conflict suffix. If dst is identical, Copy is a no-op and returns dst. Missing destination directories are created automatically.
 
 ```go
 finalPath, err := fileflow.Copy("source.txt", "backup/source.txt")
-if err != nil {
-    log.Fatal(err)
-}
-fmt.Println("File copied to:", finalPath)
-```
-
-### CopyWithPaths
-Works like Copy but creates missing destination directories first using `DirMode`.
-
-```go
-finalPath, err := fileflow.CopyWithPaths("source.txt", "backup/source.txt")
 if err != nil {
     log.Fatal(err)
 }
@@ -149,10 +138,13 @@ finalPath, err := f.Move("source.txt", "destination.txt")
 type Flow struct {
     FindAvailableName func(string) (string, error)
     DirMode           fs.FileMode
+    NoCreateDirs      bool
 }
 ```
 
-The zero value is ready to use. A nil `FindAvailableName` uses `FindAvailableNameInc`, and a zero `DirMode` uses `0755`. `Flow` has `Move`, `Rename`, `Copy`, and `CopyWithPaths` methods with the same signatures and behavior as the package-level functions.
+The zero value is ready to use. A nil `FindAvailableName` uses `FindAvailableNameInc`, and a zero `DirMode` uses `0755`. `Flow` has `Move`, `Rename`, and `Copy` methods with the same signatures and behavior as the package-level functions.
+
+FileFlow creates missing destination directories by default — a deliberate departure from `os.Rename` and OS defaults, which fail when the directory doesn't exist. Set `NoCreateDirs: true` to get standard-library behavior: operations then fail with the underlying `fs.ErrNotExist` instead of creating the directory. This is useful when, for example, the destination is a mount point that must already exist, so files can't be written to an accidentally-created directory on the wrong volume.
 
 Configure a `Flow` before first use; do not mutate it concurrently with calls to its methods.
 
@@ -169,7 +161,7 @@ if err != nil {
 fmt.Println("File moved to:", finalPath)
 ```
 
-The package-level `Move`, `Rename`, `Copy`, and `CopyWithPaths` functions remain available for simple usage and use the zero-value defaults. Per-instance `Flow` configuration replaces the mutable package globals from earlier versions; this is a breaking change.
+The package-level `Move`, `Rename`, and `Copy` functions remain available for simple usage and use the zero-value defaults. Per-instance `Flow` configuration replaces the mutable package globals from earlier versions; this is a breaking change.
 
 The maximum number of incrementing candidates is an internal constant of 100 and is not configurable.
 

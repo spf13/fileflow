@@ -1445,8 +1445,8 @@ func TestFlowDirMode(t *testing.T) {
 
 	nestedDir := filepath.Join(tempDir, "nested")
 	dst := filepath.Join(nestedDir, "dest.txt")
-	if _, err := f.CopyWithPaths(src, dst); err != nil {
-		t.Fatalf("Flow.CopyWithPaths() error: %v", err)
+	if _, err := f.Copy(src, dst); err != nil {
+		t.Fatalf("Flow.Copy() error: %v", err)
 	}
 
 	info, err := os.Stat(nestedDir)
@@ -1457,4 +1457,114 @@ func TestFlowDirMode(t *testing.T) {
 	if perm := info.Mode() & fs.ModePerm; perm&^fs.FileMode(0700) != 0 {
 		t.Errorf("created directory perm = %v; want no bits outside 0700", perm)
 	}
+}
+
+func TestCopyCreatesDirs(t *testing.T) {
+	tempDir := t.TempDir()
+
+	src := filepath.Join(tempDir, "source.txt")
+	content := []byte("hello")
+	if err := os.WriteFile(src, content, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	nestedDir := filepath.Join(tempDir, "a", "b", "c")
+	dst := filepath.Join(nestedDir, "dest.txt")
+
+	final, err := Copy(src, dst)
+	if err != nil {
+		t.Fatalf("Copy() error: %v", err)
+	}
+	if final != dst {
+		t.Errorf("Copy() = %v; want %v", final, dst)
+	}
+
+	info, err := os.Stat(nestedDir)
+	if err != nil {
+		t.Fatalf("stat created directory: %v", err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("%q is not a directory", nestedDir)
+	}
+
+	got, err := os.ReadFile(final)
+	if err != nil {
+		t.Fatalf("reading copied file: %v", err)
+	}
+	if !bytes.Equal(got, content) {
+		t.Errorf("copied content = %q; want %q", got, content)
+	}
+}
+
+func TestNoCreateDirs(t *testing.T) {
+	f := Flow{NoCreateDirs: true}
+
+	// (a) Copy into a missing directory fails with fs.ErrNotExist.
+	t.Run("CopyMissingDir", func(t *testing.T) {
+		tempDir := t.TempDir()
+		src := filepath.Join(tempDir, "source.txt")
+		if err := os.WriteFile(src, []byte("hello"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		dst := filepath.Join(tempDir, "missing", "dest.txt")
+		if _, err := f.Copy(src, dst); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("Copy() error = %v; want fs.ErrNotExist", err)
+		}
+	})
+
+	// (b) Rename into a missing directory fails with fs.ErrNotExist.
+	t.Run("RenameMissingDir", func(t *testing.T) {
+		tempDir := t.TempDir()
+		src := filepath.Join(tempDir, "source.txt")
+		if err := os.WriteFile(src, []byte("hello"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		dst := filepath.Join(tempDir, "missing", "dest.txt")
+		if _, err := f.Rename(src, dst); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("Rename() error = %v; want fs.ErrNotExist", err)
+		}
+	})
+
+	// (c) Both succeed when the destination directory exists.
+	t.Run("CopyExistingDir", func(t *testing.T) {
+		tempDir := t.TempDir()
+		src := filepath.Join(tempDir, "source.txt")
+		content := []byte("hello")
+		if err := os.WriteFile(src, content, 0644); err != nil {
+			t.Fatal(err)
+		}
+		dst := filepath.Join(tempDir, "dest.txt")
+		final, err := f.Copy(src, dst)
+		if err != nil {
+			t.Fatalf("Copy() error: %v", err)
+		}
+		got, err := os.ReadFile(final)
+		if err != nil {
+			t.Fatalf("reading copied file: %v", err)
+		}
+		if !bytes.Equal(got, content) {
+			t.Errorf("copied content = %q; want %q", got, content)
+		}
+	})
+
+	t.Run("RenameExistingDir", func(t *testing.T) {
+		tempDir := t.TempDir()
+		src := filepath.Join(tempDir, "source.txt")
+		content := []byte("hello")
+		if err := os.WriteFile(src, content, 0644); err != nil {
+			t.Fatal(err)
+		}
+		dst := filepath.Join(tempDir, "dest.txt")
+		final, err := f.Rename(src, dst)
+		if err != nil {
+			t.Fatalf("Rename() error: %v", err)
+		}
+		got, err := os.ReadFile(final)
+		if err != nil {
+			t.Fatalf("reading renamed file: %v", err)
+		}
+		if !bytes.Equal(got, content) {
+			t.Errorf("renamed content = %q; want %q", got, content)
+		}
+	})
 }

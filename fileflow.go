@@ -19,7 +19,9 @@ limitations under the License.
 // use no-replace primitives, copies land atomically via a temporary
 // file, and naming conflicts are resolved by configurable strategies
 // (see Flow and the FindAvailableName functions). Destinations identical
-// to the source are deduplicated rather than rewritten.
+// to the source are deduplicated rather than rewritten. Unlike the
+// standard library, FileFlow creates missing destination directories by
+// default; set Flow.NoCreateDirs to require existing directories instead.
 package fileflow
 
 import (
@@ -66,6 +68,13 @@ type Flow struct {
 	// DirMode is the permission mode used when creating destination
 	// directories. Zero means 0755.
 	DirMode fs.FileMode
+
+	// NoCreateDirs, when true, disables automatic creation of missing
+	// destination directories: operations fail with the underlying
+	// ErrNotExist instead, matching os.Rename semantics. The zero value
+	// (false) creates missing directories, which departs from the standard
+	// library; see the package documentation.
+	NoCreateDirs bool
 }
 
 // findAvailableName resolves the configured naming strategy, defaulting to
@@ -208,8 +217,10 @@ func (f *Flow) Rename(src, dst string) (string, error) {
 			return dst, nil
 		}
 
-		if err := os.MkdirAll(filepath.Dir(path), f.dirMode()); err != nil {
-			return "", fmt.Errorf("creating destination directory: %w", err)
+		if !f.NoCreateDirs {
+			if err := os.MkdirAll(filepath.Dir(path), f.dirMode()); err != nil {
+				return "", fmt.Errorf("creating destination directory: %w", err)
+			}
 		}
 
 		err = renameNoReplace(src, path)
@@ -233,7 +244,7 @@ func (f *Flow) Rename(src, dst string) (string, error) {
 
 // fileMove moves a file across filesystems by copy + remove.
 func (f *Flow) fileMove(src, dst string) (string, error) {
-	final, err := f.CopyWithPaths(src, dst)
+	final, err := f.Copy(src, dst)
 	if err != nil {
 		return "", err
 	}
@@ -375,25 +386,6 @@ func readersEqual(r1, r2 io.Reader) (bool, error) {
 	}
 }
 
-// CopyWithPaths copies a file from src to dst, creating any necessary paths.
-// Returns the final destination path, which may differ from dst if a naming
-// conflict was resolved.
-func CopyWithPaths(src, dst string) (string, error) {
-	var f Flow
-	return f.CopyWithPaths(src, dst)
-}
-
-// CopyWithPaths copies a file from src to dst, creating any necessary paths.
-// Returns the final destination path, which may differ from dst if a naming
-// conflict was resolved.
-func (f *Flow) CopyWithPaths(src, dst string) (string, error) {
-	if err := os.MkdirAll(filepath.Dir(dst), f.dirMode()); err != nil {
-		return "", fmt.Errorf("creating destination directory: %w", err)
-	}
-
-	return f.Copy(src, dst)
-}
-
 // Copy performs an efficient copy of a file from src to dst.
 // If the destination file exists and is identical, it returns early.
 // If the destination exists and is different, it finds an available name.
@@ -405,6 +397,8 @@ func Copy(src, dst string) (string, error) {
 }
 
 // Copy performs an efficient copy of a file from src to dst.
+// It creates missing destination directories by default, using DirMode;
+// set Flow.NoCreateDirs to require an existing directory instead.
 // If the destination file exists and is identical, it returns early.
 // If the destination exists and is different, it finds an available name.
 // It returns the final destination path written, which may differ from dst
@@ -412,6 +406,12 @@ func Copy(src, dst string) (string, error) {
 // The final rename never replaces an existing file: if a concurrent writer
 // claims the chosen name, Copy re-resolves and retries.
 func (f *Flow) Copy(src, dst string) (string, error) {
+	if !f.NoCreateDirs {
+		if err := os.MkdirAll(filepath.Dir(dst), f.dirMode()); err != nil {
+			return "", fmt.Errorf("creating destination directory: %w", err)
+		}
+	}
+
 	path, identical, err := f.resolveDst(src, dst)
 	if err != nil {
 		return "", err
