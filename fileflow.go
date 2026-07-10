@@ -184,29 +184,44 @@ func Rename(src, dst string) (string, error) {
 }
 
 // Rename attempts to rename a file from src to dst, handling naming conflicts.
-// It returns the final destination path.
+// It returns the final destination path. The rename never replaces an
+// existing file: if a concurrent writer claims the chosen name between
+// conflict resolution and the rename, Rename re-resolves and retries.
 func (f *Flow) Rename(src, dst string) (string, error) {
-	path, identical, err := f.resolveDst(src, dst)
-	if err != nil {
-		return "", err
-	}
-
-	if identical {
-		if err := os.Remove(src); err != nil {
-			return dst, &ErrFailedRemovingOriginal{err: err, file: src}
+	for attempt := 0; attempt < maxIncrementAttempts; attempt++ {
+		path, identical, err := f.resolveDst(src, dst)
+		if err != nil {
+			return "", err
 		}
-		return dst, nil
-	}
 
-	if err := os.MkdirAll(filepath.Dir(path), f.dirMode()); err != nil {
-		return "", fmt.Errorf("creating destination directory: %w", err)
-	}
+		if identical {
+			if err := os.Remove(src); err != nil {
+				return dst, &ErrFailedRemovingOriginal{err: err, file: src}
+			}
+			return dst, nil
+		}
 
-	if err := os.Rename(src, path); err != nil {
+		if err := os.MkdirAll(filepath.Dir(path), f.dirMode()); err != nil {
+			return "", fmt.Errorf("creating destination directory: %w", err)
+		}
+
+		err = renameNoReplace(src, path)
+		if err == nil {
+			return path, nil
+		}
+		var rmErr *ErrFailedRemovingOriginal
+		if errors.As(err, &rmErr) {
+			// The file landed at path but src could not be removed.
+			return path, err
+		}
+		if errors.Is(err, fs.ErrExist) {
+			// A concurrent writer took the name; resolve again.
+			continue
+		}
 		return "", &ErrFailedMovingFile{err: err, src: src, dst: path}
 	}
 
-	return path, nil
+	return "", ErrMaxAttemptsReached
 }
 
 // fileMove moves a file across filesystems by copy + remove.
@@ -387,6 +402,8 @@ func Copy(src, dst string) (string, error) {
 // If the destination exists and is different, it finds an available name.
 // It returns the final destination path written, which may differ from dst
 // when a naming conflict was resolved. On error it returns an empty path.
+// The final rename never replaces an existing file: if a concurrent writer
+// claims the chosen name, Copy re-resolves and retries.
 func (f *Flow) Copy(src, dst string) (string, error) {
 	path, identical, err := f.resolveDst(src, dst)
 	if err != nil {
@@ -395,8 +412,39 @@ func (f *Flow) Copy(src, dst string) (string, error) {
 	if identical {
 		return dst, nil // File already exists and is identical
 	}
-	dst = path
 
+	tmpName, err := copyToTemp(src, filepath.Dir(dst))
+	if err != nil {
+		return "", err
+	}
+	// No-op after a successful rename; cleans up on every failure path.
+	defer os.Remove(tmpName)
+
+	for attempt := 0; attempt < maxIncrementAttempts; attempt++ {
+		err = renameNoReplace(tmpName, path)
+		if err == nil {
+			return path, nil
+		}
+		if !errors.Is(err, fs.ErrExist) {
+			return "", fmt.Errorf("renaming temporary destination file: %w", err)
+		}
+
+		// A concurrent writer took the name; resolve again.
+		path, identical, err = f.resolveDst(src, dst)
+		if err != nil {
+			return "", err
+		}
+		if identical {
+			return dst, nil
+		}
+	}
+
+	return "", ErrMaxAttemptsReached
+}
+
+// copyToTemp copies src to a new temporary file in dir, preserving src's
+// permission mode, and returns the temporary file's path.
+func copyToTemp(src, dir string) (string, error) {
 	sourceFile, err := os.Open(src)
 	if err != nil {
 		return "", fmt.Errorf("opening source file: %w", err)
@@ -409,7 +457,7 @@ func (f *Flow) Copy(src, dst string) (string, error) {
 		return "", fmt.Errorf("getting source file info: %w", err)
 	}
 
-	tmp, err := os.CreateTemp(filepath.Dir(dst), ".fileflow-*")
+	tmp, err := os.CreateTemp(dir, ".fileflow-*")
 	if err != nil {
 		return "", fmt.Errorf("creating temporary destination file: %w", err)
 	}
@@ -438,10 +486,6 @@ func (f *Flow) Copy(src, dst string) (string, error) {
 		return "", fmt.Errorf("closing temporary destination file: %w", err)
 	}
 
-	if err := os.Rename(tmpName, dst); err != nil {
-		return "", fmt.Errorf("renaming temporary destination file: %w", err)
-	}
-
 	success = true
-	return dst, nil
+	return tmpName, nil
 }

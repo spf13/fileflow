@@ -70,6 +70,145 @@ func TestIsCrossDeviceError(t *testing.T) {
 	}
 }
 
+func TestRenameNoReplace(t *testing.T) {
+	tempDir := t.TempDir()
+
+	t.Run("moves when destination is free", func(t *testing.T) {
+		src := filepath.Join(tempDir, "free-src.txt")
+		dst := filepath.Join(tempDir, "free-dst.txt")
+		content := []byte("payload")
+		if err := os.WriteFile(src, content, 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		if err := renameNoReplace(src, dst); err != nil {
+			t.Fatalf("renameNoReplace() error: %v", err)
+		}
+		if Exists(src) {
+			t.Error("source still exists after renameNoReplace()")
+		}
+		got, err := os.ReadFile(dst)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got, content) {
+			t.Errorf("destination content = %q; want %q", got, content)
+		}
+	})
+
+	t.Run("refuses to overwrite existing destination", func(t *testing.T) {
+		src := filepath.Join(tempDir, "busy-src.txt")
+		dst := filepath.Join(tempDir, "busy-dst.txt")
+		srcContent := []byte("new content")
+		dstContent := []byte("precious existing content")
+		if err := os.WriteFile(src, srcContent, 0644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(dst, dstContent, 0644); err != nil {
+			t.Fatal(err)
+		}
+
+		err := renameNoReplace(src, dst)
+		if !errors.Is(err, fs.ErrExist) {
+			t.Fatalf("renameNoReplace() error = %v; want fs.ErrExist", err)
+		}
+		got, err := os.ReadFile(dst)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got, dstContent) {
+			t.Errorf("destination was clobbered: content = %q; want %q", got, dstContent)
+		}
+		if !Exists(src) {
+			t.Error("source was removed despite failed renameNoReplace()")
+		}
+	})
+}
+
+// TestRenameNeverOverwritesUnderRace simulates a racing writer by configuring
+// a namer that always returns a path that is already occupied. Rename must
+// refuse to overwrite it, retry, and eventually give up with
+// ErrMaxAttemptsReached — never clobbering the occupied file.
+func TestRenameNeverOverwritesUnderRace(t *testing.T) {
+	tempDir := t.TempDir()
+	src := filepath.Join(tempDir, "src.txt")
+	dst := filepath.Join(tempDir, "dst.txt")
+	occupied := filepath.Join(tempDir, "occupied.txt")
+	occupiedContent := []byte("racer's data, do not clobber")
+
+	if err := os.WriteFile(src, []byte("source"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dst, []byte("existing dst"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(occupied, occupiedContent, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	f := Flow{FindAvailableName: func(string) (string, error) { return occupied, nil }}
+	_, err := f.Rename(src, dst)
+	if !errors.Is(err, ErrMaxAttemptsReached) {
+		t.Fatalf("Rename() error = %v; want ErrMaxAttemptsReached", err)
+	}
+
+	got, err := os.ReadFile(occupied)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, occupiedContent) {
+		t.Errorf("occupied file was clobbered: content = %q; want %q", got, occupiedContent)
+	}
+	if !Exists(src) {
+		t.Error("source file was lost")
+	}
+}
+
+// TestCopyNeverOverwritesUnderRace is the Copy analogue of the race test:
+// the namer keeps steering the copy onto an occupied path, and Copy must
+// refuse, retry, give up — and leave no temp files behind.
+func TestCopyNeverOverwritesUnderRace(t *testing.T) {
+	tempDir := t.TempDir()
+	src := filepath.Join(tempDir, "src.txt")
+	dst := filepath.Join(tempDir, "dst.txt")
+	occupied := filepath.Join(tempDir, "occupied.txt")
+	occupiedContent := []byte("racer's data, do not clobber")
+
+	if err := os.WriteFile(src, []byte("source"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dst, []byte("existing dst"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(occupied, occupiedContent, 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	f := Flow{FindAvailableName: func(string) (string, error) { return occupied, nil }}
+	_, err := f.Copy(src, dst)
+	if !errors.Is(err, ErrMaxAttemptsReached) {
+		t.Fatalf("Copy() error = %v; want ErrMaxAttemptsReached", err)
+	}
+
+	got, err := os.ReadFile(occupied)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got, occupiedContent) {
+		t.Errorf("occupied file was clobbered: content = %q; want %q", got, occupiedContent)
+	}
+
+	entries, err := os.ReadDir(tempDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if len(e.Name()) >= 9 && e.Name()[:9] == ".fileflow" {
+			t.Errorf("temp file left behind: %s", e.Name())
+		}
+	}
+}
+
 func TestFileMove(t *testing.T) {
 	srcDir := t.TempDir()
 	dstDir := t.TempDir()
@@ -859,18 +998,25 @@ func TestCustomFindAvailableName(t *testing.T) {
 		t.Errorf("custom destination content = %q; want %q", got, srcContent)
 	}
 
-	// A Copy conflict must resolve through the same custom namer.
+	// A Copy conflict resolves through the same custom namer — but the
+	// namer always returns dest_custom.txt, which the Move above already
+	// occupies. Copy must refuse to overwrite it and give up, leaving the
+	// moved file intact. (The old implementation silently clobbered it.)
 	src2 := filepath.Join(tempDir, "source2.txt")
 	src2Content := []byte("another source")
 	if err := os.WriteFile(src2, src2Content, 0644); err != nil {
 		t.Fatal(err)
 	}
-	finalCopy, err := f.Copy(src2, dst)
-	if err != nil {
-		t.Fatalf("Flow.Copy() error: %v", err)
+	_, err = f.Copy(src2, dst)
+	if !errors.Is(err, ErrMaxAttemptsReached) {
+		t.Fatalf("Flow.Copy() error = %v; want ErrMaxAttemptsReached", err)
 	}
-	if finalCopy != want {
-		t.Errorf("Flow.Copy() = %v; want %v", finalCopy, want)
+	got, err = os.ReadFile(want)
+	if err != nil {
+		t.Fatalf("reading custom destination after refused copy: %v", err)
+	}
+	if !bytes.Equal(got, srcContent) {
+		t.Errorf("custom destination was clobbered: content = %q; want %q", got, srcContent)
 	}
 }
 
