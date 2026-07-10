@@ -12,7 +12,7 @@ The `fileflow` package provides a robust set of utilities to safely move, copy, 
 
 ## Safety guarantees
 
-FileFlow never overwrites a non-identical file during normal use within a single process. Conflict detection is a check-then-act operation, however, so it is not atomic against concurrent external writers. Copies are written to a temporary file in the destination directory, synced, set to the source file's mode, and renamed into place, so a failed copy does not leave a partial or truncated destination. When the destination is identical to the source, FileFlow deduplicates the operation instead of writing another copy.
+FileFlow never overwrites a non-identical file. Renames use no-replace primitives (`MoveFileEx` without `MOVEFILE_REPLACE_EXISTING` on Windows, atomic link+remove on Unix), so even a file created by a concurrent process between conflict resolution and the rename is safe: FileFlow detects the collision, resolves a new name, and retries. On Unix filesystems without hard link support (e.g. FAT), the rename falls back to a plain rename and the no-overwrite guarantee is best-effort. Copies are written to a temporary file in the destination directory, synced, set to the source file's mode, and renamed into place with the same no-replace primitive, so a failed copy does not leave a partial or truncated destination. When the destination is identical to the source, FileFlow deduplicates the operation instead of writing another copy.
 
 ## Installation
 Simply include the package in your Go project:
