@@ -1,3 +1,6 @@
+![fileflow](https://github.com/user-attachments/assets/1b9c44b9-7433-45d2-9096-68e0374fcf1b)
+
+
 # FileFlow Package
 
 The `fileflow` package provides a robust set of utilities to safely move, copy, and rename files even across different drives/filesystems. It includes various safety mechanisms to ensure files are moved efficiently, and destination files are not overwritten unless identical to the source.
