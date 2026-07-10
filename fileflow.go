@@ -23,28 +23,61 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"time"
 )
 
 const (
-	// DefaultDirMode is the default permission mode for new directories
+	// DefaultDirMode is the default permission mode for new directories.
 	DefaultDirMode = 0755
+
+	// maxIncrementAttempts is the maximum number of candidate names tried
+	// when resolving a naming conflict by incrementing a counter.
+	maxIncrementAttempts = 100
 )
 
 var (
 	ErrSameFile           = errors.New("source and destination are the same")
 	ErrMaxAttemptsReached = errors.New("maximum increment attempts reached")
-	// MaxIncrementAttempts is the maximum number of attempts to increment a filename
-	MaxIncrementAttempts             = 100               // user can override this value
-	DirMode              fs.FileMode = DefaultDirMode    // user can override this value
-
-	// FindAvailableName is the function used to find an available filename
-	// The default behavior is to increment the filename
-	// User can override this behavior by setting this variable to a custom
-	// function or the provided FindAvailableNameTS which instead of
-	// incrementing adds a timestamp
-	FindAvailableName func(string) (string, error) = FindAvailableNameInc
 )
+
+// contSuffixPattern matches a trailing "-N" counter (e.g. "-12") at the end
+// of a filename (extension already removed). Capture group 1 holds the digits.
+var contSuffixPattern = regexp.MustCompile(`-(\d+)$`)
+
+// Flow performs file operations with configurable behavior.
+// The zero value uses sensible defaults and is ready to use.
+// Configure a Flow before first use; do not mutate it concurrently
+// with calls to its methods.
+type Flow struct {
+	// FindAvailableName resolves naming conflicts when a destination
+	// already exists with different content.
+	// Nil means FindAvailableNameInc.
+	FindAvailableName func(string) (string, error)
+
+	// DirMode is the permission mode used when creating destination
+	// directories. Zero means 0755.
+	DirMode fs.FileMode
+}
+
+// findAvailableName resolves the configured naming strategy, defaulting to
+// FindAvailableNameInc when none is set.
+func (f *Flow) findAvailableName(baseName string) (string, error) {
+	if f.FindAvailableName != nil {
+		return f.FindAvailableName(baseName)
+	}
+	return FindAvailableNameInc(baseName)
+}
+
+// dirMode resolves the directory permission mode, defaulting to DefaultDirMode
+// when unset.
+func (f *Flow) dirMode() fs.FileMode {
+	if f.DirMode != 0 {
+		return f.DirMode
+	}
+	return DefaultDirMode
+}
 
 // ErrFailedRemovingOriginal occurs when the original file cannot be removed
 type ErrFailedRemovingOriginal struct {
@@ -96,15 +129,22 @@ func sameFile(src, dst string) bool {
 // Move tries to move a file atomically using rename if possible,
 // falling back to copy+delete if files are on different filesystems.
 func Move(src, dst string) (string, error) {
+	var f Flow
+	return f.Move(src, dst)
+}
+
+// Move tries to move a file atomically using rename if possible,
+// falling back to copy+delete if files are on different filesystems.
+func (f *Flow) Move(src, dst string) (string, error) {
 	if sameFile(src, dst) {
 		return "", ErrSameFile
 	}
 
-	final, err := Rename(src, dst)
+	final, err := f.Rename(src, dst)
 	if err != nil {
 		if isCrossDeviceError(err) {
 			// If the file is on a different drive, copy it instead
-			return fileMove(src, dst)
+			return f.fileMove(src, dst)
 		}
 		return "", err
 	}
@@ -115,7 +155,7 @@ func Move(src, dst string) (string, error) {
 // resolveDst decides where an operation on src may write. It returns the
 // destination path to use and whether dst already holds content identical
 // to src (in which case no write is needed).
-func resolveDst(src, dst string) (path string, identical bool, err error) {
+func (f *Flow) resolveDst(src, dst string) (path string, identical bool, err error) {
 	if sameFile(src, dst) {
 		return "", false, ErrSameFile
 	}
@@ -129,7 +169,7 @@ func resolveDst(src, dst string) (path string, identical bool, err error) {
 	if same {
 		return dst, true, nil
 	}
-	path, err = FindAvailableName(dst)
+	path, err = f.findAvailableName(dst)
 	if err != nil {
 		return "", false, fmt.Errorf("finding available name: %w", err)
 	}
@@ -139,7 +179,14 @@ func resolveDst(src, dst string) (path string, identical bool, err error) {
 // Rename attempts to rename a file from src to dst, handling naming conflicts.
 // It returns the final destination path.
 func Rename(src, dst string) (string, error) {
-	path, identical, err := resolveDst(src, dst)
+	var f Flow
+	return f.Rename(src, dst)
+}
+
+// Rename attempts to rename a file from src to dst, handling naming conflicts.
+// It returns the final destination path.
+func (f *Flow) Rename(src, dst string) (string, error) {
+	path, identical, err := f.resolveDst(src, dst)
 	if err != nil {
 		return "", err
 	}
@@ -151,7 +198,7 @@ func Rename(src, dst string) (string, error) {
 		return dst, nil
 	}
 
-	if err := os.MkdirAll(filepath.Dir(path), DirMode); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), f.dirMode()); err != nil {
 		return "", fmt.Errorf("creating destination directory: %w", err)
 	}
 
@@ -163,8 +210,8 @@ func Rename(src, dst string) (string, error) {
 }
 
 // fileMove moves a file across filesystems by copy + remove.
-func fileMove(src, dst string) (string, error) {
-	final, err := CopyWithPaths(src, dst)
+func (f *Flow) fileMove(src, dst string) (string, error) {
+	final, err := f.CopyWithPaths(src, dst)
 	if err != nil {
 		return "", err
 	}
@@ -185,10 +232,38 @@ func FindAvailableNameInc(baseName string) (string, error) {
 	ext := filepath.Ext(baseName)
 	nameWOExt := baseName[:len(baseName)-len(ext)]
 
-	for i := 1; i <= MaxIncrementAttempts; i++ {
+	for i := 1; i <= maxIncrementAttempts; i++ {
 		newName := fmt.Sprintf("%s-%d%s", nameWOExt, i, ext)
 		if !Exists(newName) {
 			return newName, nil
+		}
+	}
+
+	return "", ErrMaxAttemptsReached
+}
+
+// FindAvailableNameCont returns an available filename by treating a
+// trailing -N suffix as a counter and continuing the sequence from N+1.
+// A name without a trailing -N behaves like FindAvailableNameInc.
+// Do not use this strategy when filenames end in meaningful digits
+// (e.g. years): "report-2024.txt" would continue as "report-2025.txt".
+func FindAvailableNameCont(baseName string) (string, error) {
+	ext := filepath.Ext(baseName)
+	nameWOExt := baseName[:len(baseName)-len(ext)]
+
+	base := nameWOExt
+	start := 1
+	if m := contSuffixPattern.FindStringSubmatch(nameWOExt); m != nil {
+		if n, err := strconv.Atoi(m[1]); err == nil {
+			base = nameWOExt[:len(nameWOExt)-len(m[0])]
+			start = n + 1
+		}
+	}
+
+	for attempt := 0; attempt < maxIncrementAttempts; attempt++ {
+		candidate := fmt.Sprintf("%s-%d%s", base, start+attempt, ext)
+		if !Exists(candidate) {
+			return candidate, nil
 		}
 	}
 
@@ -266,11 +341,19 @@ func readersEqual(r1, r2 io.Reader) (bool, error) {
 // Returns the final destination path, which may differ from dst if a naming
 // conflict was resolved.
 func CopyWithPaths(src, dst string) (string, error) {
-	if err := os.MkdirAll(filepath.Dir(dst), DirMode); err != nil {
+	var f Flow
+	return f.CopyWithPaths(src, dst)
+}
+
+// CopyWithPaths copies a file from src to dst, creating any necessary paths.
+// Returns the final destination path, which may differ from dst if a naming
+// conflict was resolved.
+func (f *Flow) CopyWithPaths(src, dst string) (string, error) {
+	if err := os.MkdirAll(filepath.Dir(dst), f.dirMode()); err != nil {
 		return "", fmt.Errorf("creating destination directory: %w", err)
 	}
 
-	return Copy(src, dst)
+	return f.Copy(src, dst)
 }
 
 // Copy performs an efficient copy of a file from src to dst.
@@ -279,7 +362,17 @@ func CopyWithPaths(src, dst string) (string, error) {
 // It returns the final destination path written, which may differ from dst
 // when a naming conflict was resolved. On error it returns an empty path.
 func Copy(src, dst string) (string, error) {
-	path, identical, err := resolveDst(src, dst)
+	var f Flow
+	return f.Copy(src, dst)
+}
+
+// Copy performs an efficient copy of a file from src to dst.
+// If the destination file exists and is identical, it returns early.
+// If the destination exists and is different, it finds an available name.
+// It returns the final destination path written, which may differ from dst
+// when a naming conflict was resolved. On error it returns an empty path.
+func (f *Flow) Copy(src, dst string) (string, error) {
+	path, identical, err := f.resolveDst(src, dst)
 	if err != nil {
 		return "", err
 	}

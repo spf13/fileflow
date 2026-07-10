@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -81,7 +82,8 @@ func TestFileMove(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	final, err := fileMove(src, dst)
+	var f Flow
+	final, err := f.fileMove(src, dst)
 	if err != nil {
 		t.Fatalf("fileMove() error: %v", err)
 	}
@@ -117,7 +119,8 @@ func TestFileMoveIdenticalRemovesSrc(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	final, err := fileMove(src, dst)
+	var f Flow
+	final, err := f.fileMove(src, dst)
 	if err != nil {
 		t.Fatalf("fileMove() error: %v", err)
 	}
@@ -157,7 +160,8 @@ func TestFileMoveConflict(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	final, err := fileMove(src, dst)
+	var f Flow
+	final, err := f.fileMove(src, dst)
 	if err != nil {
 		t.Fatalf("fileMove() error: %v", err)
 	}
@@ -817,30 +821,56 @@ func TestRenameConflict(t *testing.T) {
 func TestCustomFindAvailableName(t *testing.T) {
 	tempDir := t.TempDir()
 
-	baseName := filepath.Join(tempDir, "testfile.txt")
+	src := filepath.Join(tempDir, "source.txt")
+	dst := filepath.Join(tempDir, "dest.txt")
+	srcContent := []byte("source content")
+	dstContent := []byte("destination content")
 
-	// Create a file to ensure the name needs to be incremented
-	if err := os.WriteFile(baseName, []byte("Hello World"), 0644); err != nil {
+	if err := os.WriteFile(src, srcContent, 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dst, dstContent, 0644); err != nil {
 		t.Fatal(err)
 	}
 
-	// Define a custom function for finding available names
-	customFindAvailableName := func(baseName string) (string, error) {
-		return baseName + "_custom", nil
+	// A custom namer appends "_custom" to the name instead of incrementing.
+	f := Flow{
+		FindAvailableName: func(baseName string) (string, error) {
+			ext := filepath.Ext(baseName)
+			return baseName[:len(baseName)-len(ext)] + "_custom" + ext, nil
+		},
 	}
 
-	// Set the custom function
-	FindAvailableName = customFindAvailableName
-	t.Cleanup(func() { FindAvailableName = FindAvailableNameInc })
-
-	newName, err := FindAvailableName(baseName)
+	// A Move conflict must resolve through the custom namer.
+	final, err := f.Move(src, dst)
 	if err != nil {
-		t.Fatalf("CustomFindAvailableName() error: %v", err)
+		t.Fatalf("Flow.Move() error: %v", err)
 	}
 
-	expectedName := baseName + "_custom"
-	if newName != expectedName {
-		t.Errorf("CustomFindAvailableName() = %v; want %v", newName, expectedName)
+	want := filepath.Join(tempDir, "dest_custom.txt")
+	if final != want {
+		t.Errorf("Flow.Move() = %v; want %v", final, want)
+	}
+	got, err := os.ReadFile(final)
+	if err != nil {
+		t.Fatalf("reading custom destination: %v", err)
+	}
+	if !bytes.Equal(got, srcContent) {
+		t.Errorf("custom destination content = %q; want %q", got, srcContent)
+	}
+
+	// A Copy conflict must resolve through the same custom namer.
+	src2 := filepath.Join(tempDir, "source2.txt")
+	src2Content := []byte("another source")
+	if err := os.WriteFile(src2, src2Content, 0644); err != nil {
+		t.Fatal(err)
+	}
+	finalCopy, err := f.Copy(src2, dst)
+	if err != nil {
+		t.Fatalf("Flow.Copy() error: %v", err)
+	}
+	if finalCopy != want {
+		t.Errorf("Flow.Copy() = %v; want %v", finalCopy, want)
 	}
 }
 
@@ -931,19 +961,15 @@ func TestFindAvailableNameInc(t *testing.T) {
 }
 
 func TestFindAvailableNameIncExhausted(t *testing.T) {
-	const maxAttempts = 3
-	oldMaxIncrementAttempts := MaxIncrementAttempts
-	MaxIncrementAttempts = maxAttempts
-	t.Cleanup(func() { MaxIncrementAttempts = oldMaxIncrementAttempts })
-
 	tempDir := t.TempDir()
 	baseName := filepath.Join(tempDir, "base.txt")
-	if err := os.WriteFile(baseName, []byte("base"), 0644); err != nil {
+	if err := os.WriteFile(baseName, []byte("b"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	for i := 1; i <= maxAttempts; i++ {
+	// Occupy the base name plus every increment slot -1 through -100.
+	for i := 1; i <= 100; i++ {
 		name := filepath.Join(tempDir, fmt.Sprintf("base-%d.txt", i))
-		if err := os.WriteFile(name, []byte("conflict"), 0644); err != nil {
+		if err := os.WriteFile(name, []byte("x"), 0644); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -1026,5 +1052,190 @@ func TestFindAvailableNameTS(t *testing.T) {
 	preservedPattern := regexp.MustCompile(`^` + regexp.QuoteMeta(filepath.Join(tempDir, "myfile-2024-")) + `\d{8}-\d{6}\.\d{9}\.txt$`)
 	if !preservedPattern.MatchString(preservedName) {
 		t.Errorf("FindAvailableNameTS() = %v; want full original name preserved with timestamp", preservedName)
+	}
+}
+
+func TestFindAvailableNameCont(t *testing.T) {
+	tempDir := t.TempDir()
+
+	// (a) A name with no trailing counter behaves like Inc: file.txt -> file-1.txt.
+	fileTxt := filepath.Join(tempDir, "file.txt")
+	if err := os.WriteFile(fileTxt, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	got, err := FindAvailableNameCont(fileTxt)
+	if err != nil {
+		t.Fatalf("FindAvailableNameCont() error: %v", err)
+	}
+	if want := filepath.Join(tempDir, "file-1.txt"); got != want {
+		t.Errorf("FindAvailableNameCont(%q) = %v; want %v", fileTxt, got, want)
+	}
+
+	// (b) A trailing counter continues the sequence: with file-1/2/3 present,
+	// Cont("file-1.txt") skips ahead to the next free slot, file-4.txt.
+	// (d) The extension is preserved throughout.
+	for i := 1; i <= 3; i++ {
+		name := filepath.Join(tempDir, fmt.Sprintf("file-%d.txt", i))
+		if err := os.WriteFile(name, []byte("x"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err = FindAvailableNameCont(filepath.Join(tempDir, "file-1.txt"))
+	if err != nil {
+		t.Fatalf("FindAvailableNameCont() error: %v", err)
+	}
+	if want := filepath.Join(tempDir, "file-4.txt"); got != want {
+		t.Errorf("FindAvailableNameCont(file-1.txt) = %v; want %v", got, want)
+	}
+
+	// (e) A name without an extension works.
+	noExt := filepath.Join(tempDir, "noext")
+	if err := os.WriteFile(noExt, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	got, err = FindAvailableNameCont(noExt)
+	if err != nil {
+		t.Fatalf("FindAvailableNameCont() no-ext error: %v", err)
+	}
+	if want := filepath.Join(tempDir, "noext-1"); got != want {
+		t.Errorf("FindAvailableNameCont(noext) = %v; want %v", got, want)
+	}
+
+	// (f) Meaningful-digits caveat. This is the DOCUMENTED behavior of Cont: a
+	// trailing -N is always treated as a counter, even when the digits are
+	// meaningful (like a year). report-2024.txt therefore continues as
+	// report-2025.txt rather than report-2024-1.txt.
+	report := filepath.Join(tempDir, "report-2024.txt")
+	if err := os.WriteFile(report, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	got, err = FindAvailableNameCont(report)
+	if err != nil {
+		t.Fatalf("FindAvailableNameCont() report error: %v", err)
+	}
+	if want := filepath.Join(tempDir, "report-2025.txt"); got != want {
+		t.Errorf("FindAvailableNameCont(report-2024.txt) = %v; want %v", got, want)
+	}
+}
+
+func TestFindAvailableNameContDownload(t *testing.T) {
+	// (c) The end-to-end download scenario: a destination directory already
+	// holds file-1/2/3 with distinct contents. Moving three new distinct files
+	// requested as file-1/2/3 lands them at file-4/5/6.
+	tempDir := t.TempDir()
+	dstDir := filepath.Join(tempDir, "downloads")
+	if err := os.MkdirAll(dstDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	for i := 1; i <= 3; i++ {
+		name := filepath.Join(dstDir, fmt.Sprintf("file-%d.txt", i))
+		if err := os.WriteFile(name, []byte(fmt.Sprintf("existing-%d", i)), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	f := Flow{FindAvailableName: FindAvailableNameCont}
+
+	wantNames := []string{"file-4.txt", "file-5.txt", "file-6.txt"}
+	for i := 1; i <= 3; i++ {
+		src := filepath.Join(tempDir, fmt.Sprintf("new-%d.txt", i))
+		content := []byte(fmt.Sprintf("new distinct content %d", i))
+		if err := os.WriteFile(src, content, 0644); err != nil {
+			t.Fatal(err)
+		}
+		requested := filepath.Join(dstDir, fmt.Sprintf("file-%d.txt", i))
+		final, err := f.Move(src, requested)
+		if err != nil {
+			t.Fatalf("Flow.Move() error: %v", err)
+		}
+		want := filepath.Join(dstDir, wantNames[i-1])
+		if final != want {
+			t.Errorf("Flow.Move() = %v; want %v", final, want)
+		}
+		got, err := os.ReadFile(final)
+		if err != nil {
+			t.Fatalf("reading moved file: %v", err)
+		}
+		if !bytes.Equal(got, content) {
+			t.Errorf("moved content = %q; want %q", got, content)
+		}
+	}
+}
+
+func TestFlowZeroValue(t *testing.T) {
+	tempDir := t.TempDir()
+	var f Flow
+
+	dstDir := filepath.Join(tempDir, "sub")
+	dst := filepath.Join(dstDir, "dest.txt")
+
+	// The first move creates the nested directory and the destination.
+	src1 := filepath.Join(tempDir, "src1.txt")
+	if err := os.WriteFile(src1, []byte("first"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	final1, err := f.Move(src1, dst)
+	if err != nil {
+		t.Fatalf("Flow.Move() error: %v", err)
+	}
+	if final1 != dst {
+		t.Errorf("Flow.Move() = %v; want %v", final1, dst)
+	}
+
+	// The directory must have been created with the default mode.
+	info, err := os.Stat(dstDir)
+	if err != nil {
+		t.Fatalf("stat created directory: %v", err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("%q is not a directory", dstDir)
+	}
+	if runtime.GOOS != "windows" {
+		if perm := info.Mode() & fs.ModePerm; perm&^fs.FileMode(DefaultDirMode) != 0 {
+			t.Errorf("created directory perm = %v; want no bits outside %v", perm, fs.FileMode(DefaultDirMode))
+		}
+	}
+
+	// A second move onto the now-existing, differing destination resolves the
+	// conflict with a -1 suffix.
+	src2 := filepath.Join(tempDir, "src2.txt")
+	if err := os.WriteFile(src2, []byte("second"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	final2, err := f.Move(src2, dst)
+	if err != nil {
+		t.Fatalf("Flow.Move() error: %v", err)
+	}
+	if want := filepath.Join(dstDir, "dest-1.txt"); final2 != want {
+		t.Errorf("Flow.Move() = %v; want %v", final2, want)
+	}
+}
+
+func TestFlowDirMode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skipf("directory permission bits are not honored on %s", runtime.GOOS)
+	}
+
+	tempDir := t.TempDir()
+	f := Flow{DirMode: 0700}
+
+	src := filepath.Join(tempDir, "source.txt")
+	if err := os.WriteFile(src, []byte("hello"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	nestedDir := filepath.Join(tempDir, "nested")
+	dst := filepath.Join(nestedDir, "dest.txt")
+	if _, err := f.CopyWithPaths(src, dst); err != nil {
+		t.Fatalf("Flow.CopyWithPaths() error: %v", err)
+	}
+
+	info, err := os.Stat(nestedDir)
+	if err != nil {
+		t.Fatalf("stat created directory: %v", err)
+	}
+	// Tolerant of umask: assert no permission bits fall outside 0700.
+	if perm := info.Mode() & fs.ModePerm; perm&^fs.FileMode(0700) != 0 {
+		t.Errorf("created directory perm = %v; want no bits outside 0700", perm)
 	}
 }
