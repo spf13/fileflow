@@ -983,6 +983,79 @@ func TestFindAvailableNameIncExhausted(t *testing.T) {
 	}
 }
 
+func TestFindAvailableNameAuto(t *testing.T) {
+	tempDir := t.TempDir()
+
+	write := func(name string) {
+		t.Helper()
+		if err := os.WriteFile(filepath.Join(tempDir, name), []byte("x"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	tests := []struct {
+		name     string
+		existing []string
+		input    string
+		want     string
+	}{
+		{
+			name:     "no trailing counter appends",
+			existing: []string{"file.txt"},
+			input:    "file.txt",
+			want:     "file-1.txt",
+		},
+		{
+			name:     "one-digit counter continues",
+			existing: []string{"one-1.txt", "one-2.txt", "one-3.txt"},
+			input:    "one-1.txt",
+			want:     "one-4.txt",
+		},
+		{
+			name:     "two-digit counter continues",
+			existing: []string{"log-10.txt"},
+			input:    "log-10.txt",
+			want:     "log-11.txt",
+		},
+		{
+			name:     "three-digit suffix appends",
+			existing: []string{"report-2024.txt"},
+			input:    "report-2024.txt",
+			want:     "report-2024-1.txt",
+		},
+		{
+			name:     "boundary three-digit appends",
+			existing: []string{"img-100.txt"},
+			input:    "img-100.txt",
+			want:     "img-100-1.txt",
+		},
+		{
+			name:     "no extension continues",
+			existing: []string{"noext-2"},
+			input:    "noext-2",
+			want:     "noext-3",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for _, name := range tt.existing {
+				write(name)
+			}
+
+			got, err := FindAvailableNameAuto(filepath.Join(tempDir, tt.input))
+			if err != nil {
+				t.Fatalf("FindAvailableNameAuto() error: %v", err)
+			}
+
+			want := filepath.Join(tempDir, tt.want)
+			if got != want {
+				t.Errorf("FindAvailableNameAuto(%q) = %v; want %v", tt.input, got, want)
+			}
+		})
+	}
+}
+
 func TestFindAvailableNameTS(t *testing.T) {
 	tempDir := t.TempDir()
 

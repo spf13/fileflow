@@ -89,7 +89,7 @@ if identical {
 ```
 
 ### FindAvailableName
-FileFlow provides three naming strategies for handling conflicts. The default preserves the complete requested name before appending a counter; the continuation strategy treats a trailing `-N` as an existing counter. FileFlow cannot know whether trailing digits are a counter or meaningful data, so choose the behavior that fits your filenames.
+FileFlow provides four naming strategies for handling conflicts. The default preserves the complete requested name before appending a counter; the continuation strategy treats a trailing `-N` as an existing counter. FileFlow cannot know whether trailing digits are a counter or meaningful data, so choose the behavior that fits your filenames.
 
 #### FindAvailableNameInc (Default)
 The default implementation always appends `-1`, `-2`, and so on. It tries up to 100 candidates, then returns `ErrMaxAttemptsReached`. Existing numeric endings are preserved:
@@ -103,6 +103,11 @@ This implementation treats a trailing `-N` suffix as a counter and continues fro
 This is useful for downloaded files: if one batch contains "file-1.txt", "file-2.txt", and "file-3.txt", a second batch can land as "file-4.txt", "file-5.txt", and "file-6.txt" instead of "file-1-1.txt", "file-2-1.txt", and "file-3-1.txt".
 
 Do not use this strategy when filenames end in meaningful digits. For example, "report-2024.txt" would continue as "report-2025.txt".
+
+#### FindAvailableNameAuto
+This implementation picks between the two strategies by inspecting the trailing digits. A trailing `-N` counter of one or two digits is continued like `FindAvailableNameCont`, while three or more trailing digits (years, zero-padded sequence numbers) are treated as meaningful and preserved like `FindAvailableNameInc`.
+- For "file-1.txt" when "file-1.txt" through "file-3.txt" exist, yields "file-4.txt".
+- For "report-2024.txt", yields "report-2024-1.txt", not "report-2025.txt".
 
 #### FindAvailableNameTS
 An alternative implementation that appends one nanosecond-precision timestamp using the format `20060102-150405.000000000`:

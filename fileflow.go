@@ -270,6 +270,22 @@ func FindAvailableNameCont(baseName string) (string, error) {
 	return "", ErrMaxAttemptsReached
 }
 
+// FindAvailableNameAuto chooses between the Inc and Cont strategies based
+// on the trailing suffix. A trailing -N counter of one or two digits
+// (e.g. "file-1", "file-42") is treated as a counter and continued from
+// N+1, like FindAvailableNameCont. Three or more trailing digits
+// (e.g. "report-2024", "img-001") are assumed to be meaningful and are
+// preserved, appending a new counter like FindAvailableNameInc.
+func FindAvailableNameAuto(baseName string) (string, error) {
+	ext := filepath.Ext(baseName)
+	nameWOExt := baseName[:len(baseName)-len(ext)]
+
+	if m := contSuffixPattern.FindStringSubmatch(nameWOExt); m != nil && len(m[1]) <= 2 {
+		return FindAvailableNameCont(baseName)
+	}
+	return FindAvailableNameInc(baseName)
+}
+
 // FindAvailableNameTS returns an available filename by appending a timestamp.
 func FindAvailableNameTS(baseName string) (string, error) {
 	ext := filepath.Ext(baseName)
