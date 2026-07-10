@@ -13,6 +13,13 @@ WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 See the License for the specific language governing permissions and
 limitations under the License.
 */
+
+// Package fileflow safely moves, copies, and renames files, including
+// across filesystems. It never overwrites a non-identical file: renames
+// use no-replace primitives, copies land atomically via a temporary
+// file, and naming conflicts are resolved by configurable strategies
+// (see Flow and the FindAvailableName functions). Destinations identical
+// to the source are deduplicated rather than rewritten.
 package fileflow
 
 import (
