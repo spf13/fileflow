@@ -50,7 +50,7 @@ func TestIsCrossDeviceError(t *testing.T) {
 		want bool
 	}{
 		{"exdev link error", exdevLink, true},
-		{"wrapped in ErrFailedMovingFile", &ErrFailedMovingFile{err: exdevLink, src: "a", dst: "b"}, true},
+		{"wrapped in ErrFailedMovingFile", &ErrFailedMovingFile{Err: exdevLink, Src: "a", Dst: "b"}, true},
 		{"wrapped with fmt.Errorf", fmt.Errorf("moving: %w", exdevLink), true},
 		{"other error", errors.New("other"), false},
 		{"not exist", os.ErrNotExist, false},

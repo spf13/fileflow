@@ -173,10 +173,8 @@ The package exposes sentinel errors for `errors.Is`:
 
 It also exposes structured errors for `errors.As`; both unwrap their underlying cause:
 
-* `ErrFailedRemovingOriginal`: Indicates failure to remove the original file after copying or deduplicating.
-* `ErrFailedMovingFile`: Indicates failure to rename a file from the source to the destination.
-
-Each error type includes relevant file path information to help with debugging.
+* `ErrFailedRemovingOriginal`: Indicates failure to remove the original file after copying or deduplicating. Exposes `File` (the original path) and `Err`.
+* `ErrFailedMovingFile`: Indicates failure to rename a file from the source to the destination. Exposes `Src`, `Dst`, and `Err`.
 
 ## Example
 

@@ -24,7 +24,7 @@ func renameNoReplace(src, dst string) error {
 	err := os.Link(src, dst)
 	if err == nil {
 		if rmErr := os.Remove(src); rmErr != nil {
-			return &ErrFailedRemovingOriginal{err: rmErr, file: src}
+			return &ErrFailedRemovingOriginal{Err: rmErr, File: src}
 		}
 		return nil
 	}

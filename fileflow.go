@@ -96,32 +96,36 @@ func (f *Flow) dirMode() fs.FileMode {
 }
 
 // ErrFailedRemovingOriginal occurs when the original file cannot be removed
+// after its content has safely reached the destination.
 type ErrFailedRemovingOriginal struct {
-	err  error
-	file string
+	// Err is the underlying error from the remove operation.
+	Err error
+	// File is the path of the original file that could not be removed.
+	File string
 }
 
 func (e *ErrFailedRemovingOriginal) Error() string {
-	return fmt.Sprintf("failed removing original file %v: %v", e.file, e.err)
+	return fmt.Sprintf("failed removing original file %v: %v", e.File, e.Err)
 }
 
 func (e *ErrFailedRemovingOriginal) Unwrap() error {
-	return e.err
+	return e.Err
 }
 
 // ErrFailedMovingFile occurs when a file move operation fails
 type ErrFailedMovingFile struct {
-	err error
-	src string
-	dst string
+	// Err is the underlying error from the rename operation.
+	Err error
+	// Src and Dst are the source and destination paths of the failed move.
+	Src, Dst string
 }
 
 func (e *ErrFailedMovingFile) Error() string {
-	return fmt.Sprintf("failed moving file %v to %v: %v", e.src, e.dst, e.err)
+	return fmt.Sprintf("failed moving file %v to %v: %v", e.Src, e.Dst, e.Err)
 }
 
 func (e *ErrFailedMovingFile) Unwrap() error {
-	return e.err
+	return e.Err
 }
 
 // sameFile reports whether src and dst refer to the same underlying file,
@@ -212,7 +216,7 @@ func (f *Flow) Rename(src, dst string) (string, error) {
 
 		if identical {
 			if err := os.Remove(src); err != nil {
-				return dst, &ErrFailedRemovingOriginal{err: err, file: src}
+				return dst, &ErrFailedRemovingOriginal{Err: err, File: src}
 			}
 			return dst, nil
 		}
@@ -236,7 +240,7 @@ func (f *Flow) Rename(src, dst string) (string, error) {
 			// A concurrent writer took the name; resolve again.
 			continue
 		}
-		return "", &ErrFailedMovingFile{err: err, src: src, dst: path}
+		return "", &ErrFailedMovingFile{Err: err, Src: src, Dst: path}
 	}
 
 	return "", ErrMaxAttemptsReached
@@ -249,7 +253,7 @@ func (f *Flow) fileMove(src, dst string) (string, error) {
 		return "", err
 	}
 	if err := os.Remove(src); err != nil {
-		return final, &ErrFailedRemovingOriginal{err: err, file: src}
+		return final, &ErrFailedRemovingOriginal{Err: err, File: src}
 	}
 	return final, nil
 }
