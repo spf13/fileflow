@@ -3,7 +3,7 @@
 
 # FileFlow Package
 
-The `fileflow` package provides a robust set of utilities to safely move, copy, and rename files even across different drives/filesystems. It includes various safety mechanisms to ensure files are moved efficiently, and destination files are not overwritten unless identical to the source.
+The `fileflow` package provides utilities to safely move, copy, rename, and explicitly replace files, including across drives/filesystems. `Move`, `Copy`, and `Rename` preserve non-identical destinations; `Replace` deliberately publishes new content at the exact requested path.
 
 ## Features
 
@@ -12,10 +12,13 @@ The `fileflow` package provides a robust set of utilities to safely move, copy, 
 - **Identical File Check**: Compares files to determine if they are identical, preventing unnecessary overwrites.
 - **Path Creation**: Automatically creates directories for destination paths if they don't exist.
 - **Customizable Naming Strategy**: Flexible naming strategy for handling file conflicts through customizable functions.
+- **Explicit Atomic Replacement**: `Replace` overwrites an exact destination without suffixing, with destination-side staging for cross-filesystem moves.
 
 ## Safety guarantees
 
-FileFlow never overwrites a non-identical file. Renames use no-replace primitives (`MoveFileEx` without `MOVEFILE_REPLACE_EXISTING` on Windows, atomic link+remove on Unix), so even a file created by a concurrent process between conflict resolution and the rename is safe: FileFlow detects the collision, resolves a new name, and retries. On Unix filesystems without hard link support (e.g. FAT), the rename falls back to a plain rename and the no-overwrite guarantee is best-effort. Copies are written to a temporary file in the destination directory, synced, set to the source file's mode, and renamed into place with the same no-replace primitive, so a failed copy does not leave a partial or truncated destination. When the destination is identical to the source, FileFlow deduplicates the operation instead of writing another copy.
+`Move`, `Copy`, and `Rename` never overwrite a non-identical file. Renames use no-replace primitives (`MoveFileEx` without `MOVEFILE_REPLACE_EXISTING` on Windows, atomic link+remove on Unix), so even a file created by a concurrent process between conflict resolution and the rename is safe: FileFlow detects the collision, resolves a new name, and retries. On Unix filesystems without hard link support (e.g. FAT), the rename falls back to a plain rename and the no-overwrite guarantee is best-effort. Copies are written to a temporary file in the destination directory, synced, set to the source file's mode, and renamed into place with the same no-replace primitive, so a failed copy does not leave a partial or truncated destination. When the destination is identical to the source, FileFlow deduplicates the operation instead of writing another copy.
+
+`Replace` is the explicit exception: it intentionally overwrites the exact destination, without conflict naming or a delete-then-move window. On the same filesystem it publishes by rename; across filesystems it first copies and syncs a temporary file in the destination directory, publishes that file, and then removes the source. The destination receives the source file's permissions. Atomic visibility requires filesystem rename support; this is not a promise of power-loss durability. Sync and close your staged source before calling `Replace` when durability matters. On Windows, open-file sharing rules can reject a replacement; the error is returned rather than deleting the old destination.
 
 ## Installation
 Simply include the package in your Go project:
@@ -56,6 +59,23 @@ if err != nil {
 }
 fmt.Println("File copied to:", finalPath)
 ```
+
+### Replace
+Use `Replace` when updating a canonical file such as `kennyb.toml`, where a conflict-suffixed filename would leave readers using the old content. This is a move: on success the source is consumed and the returned path is exactly `dst`, including when creating the destination for the first time.
+
+```go
+// Write, sync, and close stagedPath before publishing it.
+flow := fileflow.Flow{NoCreateDirs: true}
+finalPath, err := flow.Replace(stagedPath, "kennyb.toml")
+if err != nil {
+    log.Fatal(err)
+}
+fmt.Println("Published:", finalPath)
+```
+
+`Flow.Replace` respects `DirMode` and `NoCreateDirs`; `FindAvailableName` is ignored. The source must be a regular file: symlinks and other non-regular sources return an error matching `fs.ErrInvalid`. A destination symlink is replaced, not followed. Paths identifying the same file return `ErrSameFile`, leaving it untouched.
+
+Before publication, failure preserves the existing destination and source and cleans up destination-side staging. If a cross-filesystem publication succeeds but source removal fails, the returned path is `dst` together with `*ErrFailedRemovingOriginal`; the new destination is already committed. Existing `Move`, `Copy`, and `Rename` behavior is unchanged.
 
 ### Exists
 Reports whether an accessible regular file exists at the specified path. It returns false for directories.
@@ -145,7 +165,7 @@ type Flow struct {
 }
 ```
 
-The zero value is ready to use. A nil `FindAvailableName` uses `FindAvailableNameInc`, and a zero `DirMode` uses `0755`. `Flow` has `Move`, `Rename`, and `Copy` methods with the same signatures and behavior as the package-level functions.
+The zero value is ready to use. A nil `FindAvailableName` uses `FindAvailableNameInc`, and a zero `DirMode` uses `0755`. `Flow` has `Move`, `Rename`, `Copy`, and `Replace` methods with the same signatures and behavior as the package-level functions; `Replace` ignores the naming strategy and deliberately overwrites the exact destination.
 
 FileFlow creates missing destination directories by default — a deliberate departure from `os.Rename` and OS defaults, which fail when the directory doesn't exist. Set `NoCreateDirs: true` to get standard-library behavior: operations then fail with the underlying `fs.ErrNotExist` instead of creating the directory. This is useful when, for example, the destination is a mount point that must already exist, so files can't be written to an accidentally-created directory on the wrong volume.
 
@@ -164,7 +184,7 @@ if err != nil {
 fmt.Println("File moved to:", finalPath)
 ```
 
-The package-level `Move`, `Rename`, and `Copy` functions remain available for simple usage and use the zero-value defaults. Per-instance `Flow` configuration replaces the mutable package globals from earlier versions; this is a breaking change.
+The package-level `Move`, `Rename`, `Copy`, and `Replace` functions remain available for simple usage and use the zero-value defaults. Per-instance `Flow` configuration replaces the mutable package globals from earlier versions; this is a breaking change.
 
 The maximum number of incrementing candidates is an internal constant of 100 and is not configurable.
 
