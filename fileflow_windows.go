@@ -26,7 +26,8 @@ func isCrossDeviceError(err error) bool {
 // call fails if dst exists, and without MOVEFILE_COPY_ALLOWED it fails with
 // ERROR_NOT_SAME_DEVICE across volumes, which callers detect via
 // isCrossDeviceError.
-func renameNoReplace(src, dst string) error {
+func renameNoReplace(src, dst string, allowOverwriteFallback bool) error {
+	_ = allowOverwriteFallback
 	linkErr := func(err error) error {
 		return &os.LinkError{Op: "rename", Old: src, New: dst, Err: err}
 	}

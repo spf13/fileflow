@@ -20,7 +20,7 @@ func isCrossDeviceError(err error) bool {
 // os.Rename on Unix overwrites silently, so this uses link+remove: link
 // fails atomically with EEXIST if dst exists. On filesystems without hard
 // link support it falls back to a plain rename, which is best-effort only.
-func renameNoReplace(src, dst string) error {
+func renameNoReplace(src, dst string, allowOverwriteFallback bool) error {
 	err := os.Link(src, dst)
 	if err == nil {
 		if rmErr := os.Remove(src); rmErr != nil {
@@ -34,10 +34,13 @@ func renameNoReplace(src, dst string) error {
 	}
 
 	// The filesystem likely doesn't support hard links (e.g. FAT, some
-	// network mounts). Fall back to plain rename: best effort, may replace
-	// a file created after our existence check.
+	// network mounts). Only fall back to plain rename when explicitly
+	// allowed; otherwise return the link error to avoid silent overwrite.
 	if errors.Is(err, syscall.EPERM) || errors.Is(err, syscall.ENOTSUP) ||
 		errors.Is(err, syscall.ENOSYS) || errors.Is(err, syscall.EMLINK) {
+		if !allowOverwriteFallback {
+			return err
+		}
 		return os.Rename(src, dst)
 	}
 

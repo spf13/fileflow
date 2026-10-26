@@ -81,7 +81,7 @@ func TestRenameNoReplace(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		if err := renameNoReplace(src, dst); err != nil {
+		if err := renameNoReplace(src, dst, false); err != nil {
 			t.Fatalf("renameNoReplace() error: %v", err)
 		}
 		if Exists(src) {
@@ -108,7 +108,7 @@ func TestRenameNoReplace(t *testing.T) {
 			t.Fatal(err)
 		}
 
-		err := renameNoReplace(src, dst)
+		err := renameNoReplace(src, dst, false)
 		if !errors.Is(err, fs.ErrExist) {
 			t.Fatalf("renameNoReplace() error = %v; want fs.ErrExist", err)
 		}
@@ -1568,3 +1568,92 @@ func TestNoCreateDirs(t *testing.T) {
 		}
 	})
 }
+
+func TestSymlinkAndDirSourceRejected(t *testing.T) {
+	cases := []struct {
+		name string
+		op   func(Flow, string, string) (string, error)
+	}{
+		{"Move", func(f Flow, src, dst string) (string, error) { return f.Move(src, dst) }},
+		{"Copy", func(f Flow, src, dst string) (string, error) { return f.Copy(src, dst) }},
+		{"Rename", func(f Flow, src, dst string) (string, error) { return f.Rename(src, dst) }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name+"/symlink", func(t *testing.T) {
+			dir := t.TempDir()
+			target := filepath.Join(dir, "target.txt")
+			if err := os.WriteFile(target, []byte("data"), 0644); err != nil {
+				t.Fatal(err)
+			}
+			link := filepath.Join(dir, "link.txt")
+			if err := os.Symlink(target, link); err != nil {
+				t.Skip("symlink not supported:", err)
+			}
+			dst := filepath.Join(dir, "dst.txt")
+			_, err := tc.op(Flow{}, link, dst)
+			if !errors.Is(err, fs.ErrInvalid) {
+				t.Fatalf("%s(symlink) error = %v; want fs.ErrInvalid", tc.name, err)
+			}
+			var moveErr *ErrFailedMovingFile
+			if !errors.As(err, &moveErr) {
+				t.Fatalf("%s(symlink) error not *ErrFailedMovingFile: %T", tc.name, err)
+			}
+		})
+		t.Run(tc.name+"/directory", func(t *testing.T) {
+			dir := t.TempDir()
+			sub := filepath.Join(dir, "subdir")
+			if err := os.Mkdir(sub, 0755); err != nil {
+				t.Fatal(err)
+			}
+			dst := filepath.Join(dir, "dst.txt")
+			_, err := tc.op(Flow{}, sub, dst)
+			if !errors.Is(err, fs.ErrInvalid) {
+				t.Fatalf("%s(directory) error = %v; want fs.ErrInvalid", tc.name, err)
+			}
+		})
+	}
+}
+
+func TestAllowOverwriteFallback(t *testing.T) {
+	// Verify the field exists and defaults to false, and that
+	// setting it to true doesn't break normal operation.
+	t.Run("default is false", func(t *testing.T) {
+		var f Flow
+		if f.AllowOverwriteFallback {
+			t.Error("AllowOverwriteFallback default should be false")
+		}
+	})
+	t.Run("rename with fallback true succeeds", func(t *testing.T) {
+		dir := t.TempDir()
+		src := filepath.Join(dir, "src.txt")
+		dst := filepath.Join(dir, "dst.txt")
+		if err := os.WriteFile(src, []byte("hello"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		f := Flow{AllowOverwriteFallback: true}
+		final, err := f.Rename(src, dst)
+		if err != nil {
+			t.Fatalf("Rename with AllowOverwriteFallback=true error: %v", err)
+		}
+		if final != dst {
+			t.Errorf("final = %q; want %q", final, dst)
+		}
+	})
+	t.Run("copy with fallback true succeeds", func(t *testing.T) {
+		dir := t.TempDir()
+		src := filepath.Join(dir, "src.txt")
+		dst := filepath.Join(dir, "dst.txt")
+		if err := os.WriteFile(src, []byte("hello"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		f := Flow{AllowOverwriteFallback: true}
+		final, err := f.Copy(src, dst)
+		if err != nil {
+			t.Fatalf("Copy with AllowOverwriteFallback=true error: %v", err)
+		}
+		if final != dst {
+			t.Errorf("final = %q; want %q", final, dst)
+		}
+	})
+}
+

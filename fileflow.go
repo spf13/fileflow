@@ -76,6 +76,13 @@ type Flow struct {
 	// (false) creates missing directories, which departs from the standard
 	// library; see the package documentation.
 	NoCreateDirs bool
+
+	// AllowOverwriteFallback, when true, allows the Unix fallback from
+	// os.Link to os.Rename on filesystems that do not support hard links
+	// (e.g. FAT, SMB). When false (the default) the fallback is disabled
+	// and the link error is returned instead, preventing silent overwrite
+	// of a concurrently created destination.
+	AllowOverwriteFallback bool
 }
 
 // findAvailableName resolves the configured naming strategy, defaulting to
@@ -122,6 +129,20 @@ func (f *Flow) ensureDir(dst string) error {
 	}
 	if err := os.MkdirAll(filepath.Dir(dst), f.dirMode()); err != nil {
 		return fmt.Errorf("creating destination directory: %w", err)
+	}
+	return nil
+}
+
+// validateRegularFile checks that src is a regular file via Lstat.
+// Symlinks, directories, and other non-regular files return fs.ErrInvalid
+// wrapped in *ErrFailedMovingFile.
+func (f *Flow) validateRegularFile(src, dst string) error {
+	info, err := os.Lstat(src)
+	if err != nil {
+		return &ErrFailedMovingFile{Err: err, Src: src, Dst: dst}
+	}
+	if !info.Mode().IsRegular() {
+		return &ErrFailedMovingFile{Err: fs.ErrInvalid, Src: src, Dst: dst}
 	}
 	return nil
 }
@@ -187,6 +208,9 @@ func Move(src, dst string) (string, error) {
 // Move tries to move a file atomically using rename if possible,
 // falling back to copy+delete if files are on different filesystems.
 func (f *Flow) Move(src, dst string) (string, error) {
+	if err := f.validateRegularFile(src, dst); err != nil {
+		return "", err
+	}
 	if sameFile(src, dst) {
 		return "", ErrSameFile
 	}
@@ -239,6 +263,9 @@ func Rename(src, dst string) (string, error) {
 // existing file: if a concurrent writer claims the chosen name between
 // conflict resolution and the rename, Rename re-resolves and retries.
 func (f *Flow) Rename(src, dst string) (string, error) {
+	if err := f.validateRegularFile(src, dst); err != nil {
+		return "", err
+	}
 	for attempt := 0; attempt < maxIncrementAttempts; attempt++ {
 		path, identical, err := f.resolveDst(src, dst)
 		if err != nil {
@@ -256,7 +283,7 @@ func (f *Flow) Rename(src, dst string) (string, error) {
 			return "", err
 		}
 
-		err = renameNoReplace(src, path)
+		err = renameNoReplace(src, path, f.AllowOverwriteFallback)
 		if err == nil {
 			return path, nil
 		}
@@ -418,6 +445,9 @@ func Copy(src, dst string) (string, error) {
 // The final rename never replaces an existing file: if a concurrent writer
 // claims the chosen name, Copy re-resolves and retries.
 func (f *Flow) Copy(src, dst string) (string, error) {
+	if err := f.validateRegularFile(src, dst); err != nil {
+		return "", err
+	}
 	if err := f.ensureDir(dst); err != nil {
 		return "", err
 	}
@@ -438,7 +468,7 @@ func (f *Flow) Copy(src, dst string) (string, error) {
 	defer os.Remove(tmpName)
 
 	for attempt := 0; attempt < maxIncrementAttempts; attempt++ {
-		err = renameNoReplace(tmpName, path)
+		err = renameNoReplace(tmpName, path, f.AllowOverwriteFallback)
 		if err == nil {
 			return path, nil
 		}
