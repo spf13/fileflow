@@ -33,7 +33,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"time"
 )
@@ -52,14 +51,9 @@ var (
 	ErrMaxAttemptsReached = errors.New("maximum increment attempts reached")
 )
 
-// contSuffixPattern matches a trailing "-N" counter (e.g. "-12") at the end
-// of a filename (extension already removed). Capture group 1 holds the digits.
-var contSuffixPattern = regexp.MustCompile(`-(\d+)$`)
-
-// Flow performs file operations with configurable behavior.
-// The zero value uses sensible defaults and is ready to use.
-// Configure a Flow before first use; do not mutate it concurrently
-// with calls to its methods.
+// Flow provides per-instance configuration for file operations.
+// The zero value is ready to use. Configure a Flow before first use;
+// do not mutate it concurrently with calls to its methods.
 type Flow struct {
 	// FindAvailableName resolves naming conflicts when a destination
 	// already exists with different content.
@@ -145,6 +139,30 @@ func (f *Flow) validateRegularFile(src, dst string) error {
 		return &ErrFailedMovingFile{Err: fs.ErrInvalid, Src: src, Dst: dst}
 	}
 	return nil
+}
+
+// parseContSuffix parses a trailing "-N" suffix from s.
+// It returns base (s without suffix), the numeric value, and whether a
+// suffix was found. Used by FindAvailableNameCont/Auto without regexp.
+func parseContSuffix(s string) (base string, n int, ok bool) {
+	dash := -1
+	for i := len(s) - 1; i >= 0; i-- {
+		if s[i] == '-' {
+			dash = i
+			break
+		}
+		if s[i] < '0' || s[i] > '9' {
+			return s, 0, false
+		}
+	}
+	if dash == -1 || dash == len(s)-1 {
+		return s, 0, false
+	}
+	n, err := strconv.Atoi(s[dash+1:])
+	if err != nil {
+		return s, 0, false
+	}
+	return s[:dash], n, true
 }
 
 // ErrFailedRemovingOriginal occurs when the original file cannot be removed
@@ -315,7 +333,7 @@ func (f *Flow) fileMove(src, dst string) (string, error) {
 	return final, nil
 }
 
-// Exists returns true if the file exists and is accessible
+// Exists reports whether an accessible regular file exists at the given path. It returns false for directories and inaccessible paths.
 func Exists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && !info.IsDir()
@@ -337,11 +355,9 @@ func FindAvailableNameCont(baseName string) (string, error) {
 	stem, ext := splitExt(baseName)
 	base := stem
 	start := 1
-	if m := contSuffixPattern.FindStringSubmatch(stem); m != nil {
-		if n, err := strconv.Atoi(m[1]); err == nil {
-			base = stem[:len(stem)-len(m[0])]
-			start = n + 1
-		}
+	if b, n, ok := parseContSuffix(stem); ok {
+		base = b
+		start = n + 1
 	}
 	return findAvailable(baseName, func(_, _ string, i int) string {
 		return fmt.Sprintf("%s-%d%s", base, start+i-1, ext)
@@ -356,8 +372,11 @@ func FindAvailableNameCont(baseName string) (string, error) {
 // preserved, appending a new counter like FindAvailableNameInc.
 func FindAvailableNameAuto(baseName string) (string, error) {
 	stem, _ := splitExt(baseName)
-	if m := contSuffixPattern.FindStringSubmatch(stem); m != nil && len(m[1]) <= 2 {
-		return FindAvailableNameCont(baseName)
+	if b, _, ok := parseContSuffix(stem); ok {
+		digits := stem[len(b)+1:]
+		if len(digits) <= 2 {
+			return FindAvailableNameCont(baseName)
+		}
 	}
 	return FindAvailableNameInc(baseName)
 }
@@ -372,7 +391,7 @@ func FindAvailableNameTS(baseName string) (string, error) {
 	return FindAvailableNameInc(candidate)
 }
 
-// Equal compares two files and returns true if they have identical content
+// Equal reports whether two files have identical content by comparing them byte for byte.
 func Equal(file1, file2 string) (bool, error) {
 	f1Info, err := os.Stat(file1)
 	if err != nil {
