@@ -1657,3 +1657,48 @@ func TestAllowOverwriteFallback(t *testing.T) {
 	})
 }
 
+func TestErrorWrappingAndQuoting(t *testing.T) {
+	t.Run("ErrorStringsQuotePaths", func(t *testing.T) {
+		moveErr := &ErrFailedMovingFile{Src: "a b.txt", Dst: "c d.txt", Err: fs.ErrPermission}
+		wantMove := `failed moving file "a b.txt" to "c d.txt": ` + fs.ErrPermission.Error()
+		if got := moveErr.Error(); got != wantMove {
+			t.Errorf("ErrFailedMovingFile.Error() = %q; want %q", got, wantMove)
+		}
+
+		rmErr := &ErrFailedRemovingOriginal{File: "a b.txt", Err: fs.ErrPermission}
+		wantRm := `failed removing original file "a b.txt": ` + fs.ErrPermission.Error()
+		if got := rmErr.Error(); got != wantRm {
+			t.Errorf("ErrFailedRemovingOriginal.Error() = %q; want %q", got, wantRm)
+		}
+	})
+
+	t.Run("CopyMoveRenameReplaceWrapInErrFailedMovingFile", func(t *testing.T) {
+		dir := t.TempDir()
+		missingSrc := filepath.Join(dir, "missing.txt")
+		dst := filepath.Join(dir, "dst.txt")
+
+		ops := []struct {
+			name string
+			fn   func(string, string) (string, error)
+		}{
+			{"Move", Move},
+			{"Copy", Copy},
+			{"Rename", Rename},
+			{"Replace", Replace},
+		}
+		for _, op := range ops {
+			_, err := op.fn(missingSrc, dst)
+			if !errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("%s() error = %v; want fs.ErrNotExist", op.name, err)
+			}
+			var moveErr *ErrFailedMovingFile
+			if !errors.As(err, &moveErr) {
+				t.Fatalf("%s() error %T does not unwrap to *ErrFailedMovingFile", op.name, err)
+			}
+			if moveErr.Src != missingSrc || moveErr.Dst != dst {
+				t.Errorf("%s() ErrFailedMovingFile Src=%q Dst=%q; want %q, %q", op.name, moveErr.Src, moveErr.Dst, missingSrc, dst)
+			}
+		}
+	})
+}
+

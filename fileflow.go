@@ -166,7 +166,8 @@ func parseContSuffix(s string) (base string, n int, ok bool) {
 }
 
 // ErrFailedRemovingOriginal occurs when the original file cannot be removed
-// after its content has safely reached the destination.
+// after its content has safely reached the destination. When returned alongside
+// a non-empty destination path, the destination file is already committed.
 type ErrFailedRemovingOriginal struct {
 	// Err is the underlying error from the remove operation.
 	Err error
@@ -175,7 +176,7 @@ type ErrFailedRemovingOriginal struct {
 }
 
 func (e *ErrFailedRemovingOriginal) Error() string {
-	return fmt.Sprintf("failed removing original file %v: %v", e.File, e.Err)
+	return fmt.Sprintf("failed removing original file %q: %v", e.File, e.Err)
 }
 
 func (e *ErrFailedRemovingOriginal) Unwrap() error {
@@ -191,7 +192,7 @@ type ErrFailedMovingFile struct {
 }
 
 func (e *ErrFailedMovingFile) Error() string {
-	return fmt.Sprintf("failed moving file %v to %v: %v", e.Src, e.Dst, e.Err)
+	return fmt.Sprintf("failed moving file %q to %q: %v", e.Src, e.Dst, e.Err)
 }
 
 func (e *ErrFailedMovingFile) Unwrap() error {
@@ -276,32 +277,46 @@ func Rename(src, dst string) (string, error) {
 	return f.Rename(src, dst)
 }
 
-// Rename attempts to rename a file from src to dst, handling naming conflicts.
-// It returns the final destination path. The rename never replaces an
-// existing file: if a concurrent writer claims the chosen name between
-// conflict resolution and the rename, Rename re-resolves and retries.
-func (f *Flow) Rename(src, dst string) (string, error) {
-	if err := f.validateRegularFile(src, dst); err != nil {
-		return "", err
-	}
-	for attempt := 0; attempt < maxIncrementAttempts; attempt++ {
+// publishWithRetry resolves naming conflicts, stages the source if needed, and
+// publishes to the resolved destination with no-replace retry on fs.ErrExist.
+func (f *Flow) publishWithRetry(
+	src, dst string,
+	onIdentical func() error,
+	stage func() (stagedPath string, cleanup func(), err error),
+) (string, error) {
+	var staged string
+	var cleanup func()
+	defer func() {
+		if cleanup != nil {
+			cleanup()
+		}
+	}()
+
+	for range maxIncrementAttempts {
 		path, identical, err := f.resolveDst(src, dst)
 		if err != nil {
-			return "", err
+			if errors.Is(err, ErrSameFile) {
+				return "", err
+			}
+			return "", &ErrFailedMovingFile{Err: err, Src: src, Dst: dst}
 		}
-
 		if identical {
-			if err := os.Remove(src); err != nil {
-				return dst, &ErrFailedRemovingOriginal{Err: err, File: src}
+			if err := onIdentical(); err != nil {
+				return dst, err
 			}
 			return dst, nil
 		}
-
 		if err := f.ensureDir(path); err != nil {
-			return "", err
+			return "", &ErrFailedMovingFile{Err: err, Src: src, Dst: path}
+		}
+		if staged == "" {
+			staged, cleanup, err = stage()
+			if err != nil {
+				return "", &ErrFailedMovingFile{Err: err, Src: src, Dst: path}
+			}
 		}
 
-		err = renameNoReplace(src, path, f.AllowOverwriteFallback)
+		err = renameNoReplace(staged, path, f.AllowOverwriteFallback)
 		if err == nil {
 			_ = syncDir(filepath.Dir(path))
 			return path, nil
@@ -318,7 +333,25 @@ func (f *Flow) Rename(src, dst string) (string, error) {
 		return "", &ErrFailedMovingFile{Err: err, Src: src, Dst: path}
 	}
 
-	return "", ErrMaxAttemptsReached
+	return "", &ErrFailedMovingFile{Err: ErrMaxAttemptsReached, Src: src, Dst: dst}
+}
+
+// Rename attempts to rename a file from src to dst, handling naming conflicts.
+// It returns the final destination path. The rename never replaces an
+// existing file: if a concurrent writer claims the chosen name between
+// conflict resolution and the rename, Rename re-resolves and retries.
+func (f *Flow) Rename(src, dst string) (string, error) {
+	if err := f.validateRegularFile(src, dst); err != nil {
+		return "", err
+	}
+	return f.publishWithRetry(src, dst, func() error {
+		if err := os.Remove(src); err != nil {
+			return &ErrFailedRemovingOriginal{Err: err, File: src}
+		}
+		return nil
+	}, func() (string, func(), error) {
+		return src, nil, nil
+	})
 }
 
 // fileMove moves a file across filesystems by copy + remove.
@@ -468,52 +501,15 @@ func (f *Flow) Copy(src, dst string) (string, error) {
 	if err := f.validateRegularFile(src, dst); err != nil {
 		return "", err
 	}
-	if err := f.ensureDir(dst); err != nil {
-		return "", err
-	}
-
-	path, identical, err := f.resolveDst(src, dst)
-	if err != nil {
-		if errors.Is(err, ErrSameFile) {
-			return "", err
-		}
-		return "", &ErrFailedMovingFile{Src: src, Dst: dst, Err: err}
-	}
-	if identical {
-		return dst, nil // File already exists and is identical
-	}
-
-	tmpName, err := copyToTemp(src, filepath.Dir(dst))
-	if err != nil {
-		return "", &ErrFailedMovingFile{Src: src, Dst: dst, Err: err}
-	}
-	// No-op after a successful rename; cleans up on every failure path.
-	defer os.Remove(tmpName)
-
-	for attempt := 0; attempt < maxIncrementAttempts; attempt++ {
-		err = renameNoReplace(tmpName, path, f.AllowOverwriteFallback)
-		if err == nil {
-			_ = syncDir(filepath.Dir(path))
-			return path, nil
-		}
-		if !errors.Is(err, fs.ErrExist) {
-			return "", &ErrFailedMovingFile{Src: src, Dst: path, Err: err}
-		}
-
-		// A concurrent writer took the name; resolve again.
-		path, identical, err = f.resolveDst(src, dst)
+	return f.publishWithRetry(src, dst, func() error {
+		return nil
+	}, func() (string, func(), error) {
+		tmpName, err := copyToTemp(src, filepath.Dir(dst))
 		if err != nil {
-			if errors.Is(err, ErrSameFile) {
-				return "", err
-			}
-			return "", &ErrFailedMovingFile{Src: src, Dst: dst, Err: err}
+			return "", nil, err
 		}
-		if identical {
-			return dst, nil
-		}
-	}
-
-	return "", ErrMaxAttemptsReached
+		return tmpName, func() { os.Remove(tmpName) }, nil
+	})
 }
 
 // copyToTemp copies src to a new temporary file in dir, preserving src's

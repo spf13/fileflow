@@ -38,7 +38,7 @@ func (f *Flow) Replace(src, dst string) (string, error) {
 		return "", ErrSameFile
 	}
 	if err := f.ensureDir(dst); err != nil {
-		return "", err
+		return "", &ErrFailedMovingFile{Err: err, Src: src, Dst: dst}
 	}
 
 	if err := renameReplace(src, dst); err == nil {
@@ -51,7 +51,7 @@ func (f *Flow) Replace(src, dst string) (string, error) {
 	// Publish only after copying and syncing the full file on the target volume.
 	tmp, err := copyToTemp(src, filepath.Dir(dst))
 	if err != nil {
-		return "", err
+		return "", &ErrFailedMovingFile{Err: err, Src: src, Dst: dst}
 	}
 	defer os.Remove(tmp)
 	if err := renameReplace(tmp, dst); err != nil {
