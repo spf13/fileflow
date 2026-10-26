@@ -96,6 +96,36 @@ func (f *Flow) dirMode() fs.FileMode {
 	return DefaultDirMode
 }
 
+// splitExt splits name into stem and extension.
+func splitExt(name string) (stem, ext string) {
+	ext = filepath.Ext(name)
+	return name[:len(name)-len(ext)], ext
+}
+
+// findAvailable generates candidate names by calling next with incrementing
+// counters starting at 1 and returns the first that does not exist.
+func findAvailable(baseName string, next func(stem, ext string, i int) string) (string, error) {
+	stem, ext := splitExt(baseName)
+	for i := 1; i <= maxIncrementAttempts; i++ {
+		cand := next(stem, ext, i)
+		if !Exists(cand) {
+			return cand, nil
+		}
+	}
+	return "", ErrMaxAttemptsReached
+}
+
+// ensureDir creates the parent directory of dst when NoCreateDirs is false.
+func (f *Flow) ensureDir(dst string) error {
+	if f.NoCreateDirs {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), f.dirMode()); err != nil {
+		return fmt.Errorf("creating destination directory: %w", err)
+	}
+	return nil
+}
+
 // ErrFailedRemovingOriginal occurs when the original file cannot be removed
 // after its content has safely reached the destination.
 type ErrFailedRemovingOriginal struct {
@@ -222,10 +252,8 @@ func (f *Flow) Rename(src, dst string) (string, error) {
 			return dst, nil
 		}
 
-		if !f.NoCreateDirs {
-			if err := os.MkdirAll(filepath.Dir(path), f.dirMode()); err != nil {
-				return "", fmt.Errorf("creating destination directory: %w", err)
-			}
+		if err := f.ensureDir(path); err != nil {
+			return "", err
 		}
 
 		err = renameNoReplace(src, path)
@@ -267,17 +295,9 @@ func Exists(path string) bool {
 
 // FindAvailableNameInc returns an available filename by incrementing a counter
 func FindAvailableNameInc(baseName string) (string, error) {
-	ext := filepath.Ext(baseName)
-	nameWOExt := baseName[:len(baseName)-len(ext)]
-
-	for i := 1; i <= maxIncrementAttempts; i++ {
-		newName := fmt.Sprintf("%s-%d%s", nameWOExt, i, ext)
-		if !Exists(newName) {
-			return newName, nil
-		}
-	}
-
-	return "", ErrMaxAttemptsReached
+	return findAvailable(baseName, func(stem, ext string, i int) string {
+		return fmt.Sprintf("%s-%d%s", stem, i, ext)
+	})
 }
 
 // FindAvailableNameCont returns an available filename by treating a
@@ -286,26 +306,18 @@ func FindAvailableNameInc(baseName string) (string, error) {
 // Do not use this strategy when filenames end in meaningful digits
 // (e.g. years): "report-2024.txt" would continue as "report-2025.txt".
 func FindAvailableNameCont(baseName string) (string, error) {
-	ext := filepath.Ext(baseName)
-	nameWOExt := baseName[:len(baseName)-len(ext)]
-
-	base := nameWOExt
+	stem, ext := splitExt(baseName)
+	base := stem
 	start := 1
-	if m := contSuffixPattern.FindStringSubmatch(nameWOExt); m != nil {
+	if m := contSuffixPattern.FindStringSubmatch(stem); m != nil {
 		if n, err := strconv.Atoi(m[1]); err == nil {
-			base = nameWOExt[:len(nameWOExt)-len(m[0])]
+			base = stem[:len(stem)-len(m[0])]
 			start = n + 1
 		}
 	}
-
-	for attempt := 0; attempt < maxIncrementAttempts; attempt++ {
-		candidate := fmt.Sprintf("%s-%d%s", base, start+attempt, ext)
-		if !Exists(candidate) {
-			return candidate, nil
-		}
-	}
-
-	return "", ErrMaxAttemptsReached
+	return findAvailable(baseName, func(_, _ string, i int) string {
+		return fmt.Sprintf("%s-%d%s", base, start+i-1, ext)
+	})
 }
 
 // FindAvailableNameAuto chooses between the Inc and Cont strategies based
@@ -315,10 +327,8 @@ func FindAvailableNameCont(baseName string) (string, error) {
 // (e.g. "report-2024", "img-001") are assumed to be meaningful and are
 // preserved, appending a new counter like FindAvailableNameInc.
 func FindAvailableNameAuto(baseName string) (string, error) {
-	ext := filepath.Ext(baseName)
-	nameWOExt := baseName[:len(baseName)-len(ext)]
-
-	if m := contSuffixPattern.FindStringSubmatch(nameWOExt); m != nil && len(m[1]) <= 2 {
+	stem, _ := splitExt(baseName)
+	if m := contSuffixPattern.FindStringSubmatch(stem); m != nil && len(m[1]) <= 2 {
 		return FindAvailableNameCont(baseName)
 	}
 	return FindAvailableNameInc(baseName)
@@ -326,14 +336,11 @@ func FindAvailableNameAuto(baseName string) (string, error) {
 
 // FindAvailableNameTS returns an available filename by appending a timestamp.
 func FindAvailableNameTS(baseName string) (string, error) {
-	ext := filepath.Ext(baseName)
-	nameWOExt := baseName[:len(baseName)-len(ext)]
-	candidate := fmt.Sprintf("%s-%s%s", nameWOExt, time.Now().Format("20060102-150405.000000000"), ext)
-
+	stem, ext := splitExt(baseName)
+	candidate := fmt.Sprintf("%s-%s%s", stem, time.Now().Format("20060102-150405.000000000"), ext)
 	if !Exists(candidate) {
 		return candidate, nil
 	}
-
 	return FindAvailableNameInc(candidate)
 }
 
@@ -411,10 +418,8 @@ func Copy(src, dst string) (string, error) {
 // The final rename never replaces an existing file: if a concurrent writer
 // claims the chosen name, Copy re-resolves and retries.
 func (f *Flow) Copy(src, dst string) (string, error) {
-	if !f.NoCreateDirs {
-		if err := os.MkdirAll(filepath.Dir(dst), f.dirMode()); err != nil {
-			return "", fmt.Errorf("creating destination directory: %w", err)
-		}
+	if err := f.ensureDir(dst); err != nil {
+		return "", err
 	}
 
 	path, identical, err := f.resolveDst(src, dst)
