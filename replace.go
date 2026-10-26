@@ -1,7 +1,6 @@
 package fileflow
 
 import (
-	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -38,10 +37,8 @@ func (f *Flow) Replace(src, dst string) (string, error) {
 	if sameFileReplace(src, dst, info) {
 		return "", ErrSameFile
 	}
-	if !f.NoCreateDirs {
-		if err := os.MkdirAll(filepath.Dir(dst), f.dirMode()); err != nil {
-			return "", fmt.Errorf("creating destination directory: %w", err)
-		}
+	if err := f.ensureDir(dst); err != nil {
+		return "", err
 	}
 
 	if err := renameReplace(src, dst); err == nil {
