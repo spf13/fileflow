@@ -196,7 +196,7 @@ The package exposes sentinel errors for `errors.Is`:
 
 It also exposes structured errors for `errors.As`; both unwrap their underlying cause:
 
-* `ErrFailedRemovingOriginal`: Indicates failure to remove the original file after copying or deduplicating. Exposes `File` (the original path) and `Err`.
+* `ErrFailedRemovingOriginal`: Indicates failure to remove the original file after copying or deduplicating. Exposes `File` (the original path) and `Err`. When a function returns a non-empty destination path alongside `*ErrFailedRemovingOriginal`, the destination is already committed.
 * `ErrFailedMovingFile`: Indicates failure to rename a file from the source to the destination. Exposes `Src`, `Dst`, and `Err`.
 
 ## Example
