@@ -42,6 +42,7 @@ func (f *Flow) Replace(src, dst string) (string, error) {
 	}
 
 	if err := renameReplace(src, dst); err == nil {
+		_ = syncDir(filepath.Dir(dst))
 		return dst, nil
 	} else if !isCrossDeviceError(err) {
 		return "", &ErrFailedMovingFile{Err: err, Src: src, Dst: dst}
@@ -56,6 +57,7 @@ func (f *Flow) Replace(src, dst string) (string, error) {
 	if err := renameReplace(tmp, dst); err != nil {
 		return "", &ErrFailedMovingFile{Err: err, Src: src, Dst: dst}
 	}
+	_ = syncDir(filepath.Dir(dst))
 	if err := os.Remove(src); err != nil {
 		return dst, &ErrFailedRemovingOriginal{Err: err, File: src}
 	}

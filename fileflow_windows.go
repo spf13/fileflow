@@ -19,6 +19,8 @@ func isCrossDeviceError(err error) bool {
 	return errors.Is(err, syscall.EXDEV) || errors.Is(err, errNotSameDevice)
 }
 
+func syncDir(dir string) error { return nil }
+
 // renameNoReplace renames src to dst, failing with an error satisfying
 // errors.Is(err, fs.ErrExist) if dst already exists. It never overwrites dst.
 //

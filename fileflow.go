@@ -285,6 +285,7 @@ func (f *Flow) Rename(src, dst string) (string, error) {
 
 		err = renameNoReplace(src, path, f.AllowOverwriteFallback)
 		if err == nil {
+			_ = syncDir(filepath.Dir(path))
 			return path, nil
 		}
 		var rmErr *ErrFailedRemovingOriginal
@@ -473,6 +474,7 @@ func (f *Flow) Copy(src, dst string) (string, error) {
 	for attempt := 0; attempt < maxIncrementAttempts; attempt++ {
 		err = renameNoReplace(tmpName, path, f.AllowOverwriteFallback)
 		if err == nil {
+			_ = syncDir(filepath.Dir(path))
 			return path, nil
 		}
 		if !errors.Is(err, fs.ErrExist) {
