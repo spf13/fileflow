@@ -14,6 +14,21 @@ func isCrossDeviceError(err error) bool {
 	return errors.Is(err, syscall.EXDEV)
 }
 
+// syncDir fsyncs the directory at dir to ensure a newly created or
+// renamed entry is durable on storage. Errors EINVAL, EBADF, ENOTSUP,
+// and EROFS are ignored (special filesystems that do not support fsync).
+func syncDir(dir string) error {
+	f, err := os.Open(dir)
+	if err != nil {
+		return nil
+	}
+	defer f.Close()
+	if err := f.Sync(); err != nil && !errors.Is(err, syscall.EINVAL) && !errors.Is(err, syscall.EBADF) && !errors.Is(err, syscall.ENOTSUP) && !errors.Is(err, syscall.EROFS) {
+		return err
+	}
+	return nil
+}
+
 // renameNoReplace renames src to dst, failing with an error satisfying
 // errors.Is(err, fs.ErrExist) if dst already exists. It never overwrites dst.
 //
