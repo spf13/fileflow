@@ -454,7 +454,10 @@ func (f *Flow) Copy(src, dst string) (string, error) {
 
 	path, identical, err := f.resolveDst(src, dst)
 	if err != nil {
-		return "", err
+		if errors.Is(err, ErrSameFile) {
+			return "", err
+		}
+		return "", &ErrFailedMovingFile{Src: src, Dst: dst, Err: err}
 	}
 	if identical {
 		return dst, nil // File already exists and is identical
@@ -462,7 +465,7 @@ func (f *Flow) Copy(src, dst string) (string, error) {
 
 	tmpName, err := copyToTemp(src, filepath.Dir(dst))
 	if err != nil {
-		return "", err
+		return "", &ErrFailedMovingFile{Src: src, Dst: dst, Err: err}
 	}
 	// No-op after a successful rename; cleans up on every failure path.
 	defer os.Remove(tmpName)
@@ -473,13 +476,16 @@ func (f *Flow) Copy(src, dst string) (string, error) {
 			return path, nil
 		}
 		if !errors.Is(err, fs.ErrExist) {
-			return "", fmt.Errorf("renaming temporary destination file: %w", err)
+			return "", &ErrFailedMovingFile{Src: src, Dst: path, Err: err}
 		}
 
 		// A concurrent writer took the name; resolve again.
 		path, identical, err = f.resolveDst(src, dst)
 		if err != nil {
-			return "", err
+			if errors.Is(err, ErrSameFile) {
+				return "", err
+			}
+			return "", &ErrFailedMovingFile{Src: src, Dst: dst, Err: err}
 		}
 		if identical {
 			return dst, nil
