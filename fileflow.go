@@ -15,13 +15,14 @@ limitations under the License.
 */
 
 // Package fileflow safely moves, copies, and renames files, including
-// across filesystems. It never overwrites a non-identical file: renames
-// use no-replace primitives, copies land atomically via a temporary
-// file, and naming conflicts are resolved by configurable strategies
-// (see Flow and the FindAvailableName functions). Destinations identical
-// to the source are deduplicated rather than rewritten. Unlike the
-// standard library, FileFlow creates missing destination directories by
-// default; set Flow.NoCreateDirs to require existing directories instead.
+// across filesystems. Move, Copy, and Rename never overwrite a non-identical
+// file: renames use no-replace primitives, copies land atomically via a
+// temporary file, and naming conflicts are resolved by configurable strategies
+// (see Flow and the FindAvailableName functions). Destinations identical to
+// the source are deduplicated rather than rewritten. Replace is the explicit
+// opt-in operation for atomically overwriting an exact destination path.
+// Unlike the standard library, FileFlow creates missing destination directories
+// by default; set Flow.NoCreateDirs to require existing directories instead.
 package fileflow
 
 import (
