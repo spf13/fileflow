@@ -64,6 +64,7 @@ func (f *Flow) Replace(src, dst string) (string, error) {
 	}
 	return dst, nil
 }
+
 // sameFileReplace reports whether src and dst refer to the same file without
 // following a symlink at dst. srcInfo is the Lstat of src.
 func sameFileReplace(src, dst string, srcInfo os.FileInfo) bool {
