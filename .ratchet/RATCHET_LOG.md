@@ -126,3 +126,4 @@ Decision: implementer = main session; judge = fresh subagent per pass that sees 
 | tests | CONVERGED | 72 |
 | reality | PASS (check.sh at 20e721f) | — |
 Convergence: sweep 2 → 3 of 4 lenses CONVERGED (75%) + bookend all CONVERGED; no high-impact backlog item remains; done signal met (see REPORT.md). Stopping.
+- Correction: 75% (sweep 2) / 78% (sweep 2 + bookend) is below the 80% convergence threshold. The stop condition that applies is "BRIEF.md's done signal is met and verified" (verified independently by the final reality gate).
