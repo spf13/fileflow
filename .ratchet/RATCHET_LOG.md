@@ -54,3 +54,9 @@ Decision: implementer = main session; judge = fresh subagent per pass that sees 
 - Change: README safety/naming/errors sections, Rename + FindAvailableNameInc doc comments.
 - Verified: README full example and Flow/custom/Replace snippets compile (go vet); check.sh PASS.
 - Judge: KEEP; all claims verified incl. strace of renameat2. Follow-ups (→S2 docs): readme.md:78 stale "behavior is unchanged"; custom-strategy example uses Exists/filepath.Ext (misses occupied non-files, dotfiles); Replace missing from ErrFailedMovingFile list; Copy/Move doc comments lack dir note.
+
+### S1 · correctness/security(rename) — KEPT — 60→85 — 03d1959
+- Critique: link+remove isn't atomic: unremovable src (sticky dir) left dst as a hard-link alias of another user's file; EPERM/ENOTSUP fallback to os.Rename can overwrite in a race window (fileflow_notwindows.go:26-48).
+- Change: renameat2(RENAME_NOREPLACE) on linux/android, renamex_np(RENAME_EXCL) on darwin/ios; link+remove fallback elsewhere/unsupported.
+- Verified: TestRenameNoReplaceUnprivileged/source_not_removable failed first (alias left behind); check.sh PASS; cross-builds.
+- Judge: KEEP. Correction to Phase C claim: the EPERM overwrite is race-only (kernel returns EEXIST before may_linkat EPERM) — untested. Test fixes (skip-on-exec-failure, inverted comment) → 8579d37. Risk [UNVERIFIED]: a seccomp profile returning EPERM for renameat2 would now fail renames instead of falling back.
