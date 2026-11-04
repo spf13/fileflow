@@ -6,11 +6,16 @@ fail=0
 step() { echo "== $1"; }
 step build;  go build ./... || fail=1
 step vet;    go vet ./... || fail=1
-step gofmt;  out=$(gofmt -l .); [ -z "$out" ] || { echo "$out"; echo "(gofmt dirty)"; }
-step lint;   golangci-lint run ./... 2>&1 | tail -3
+step gofmt;  out=$(gofmt -l .); [ -z "$out" ] || { echo "$out"; echo "(gofmt dirty)"; fail=1; }
+step lint;   golangci-lint run ./... 2>&1 | tail -3; [ "${PIPESTATUS[0]}" = 0 ] || fail=1
 step test;   go test -race -count=1 ./... || fail=1
 step go1.19; GOTOOLCHAIN=go1.19.13 go test -count=1 ./... || fail=1
 step cross;  for os in windows darwin; do GOOS=$os go vet ./... || fail=1; done
-step smoke;  out=$(mktemp); (cd .ratchet/smoke && go run . > "$out" 2>&1; diff "$out" expected.txt; m=$(grep -cxFf expected.txt "$out"); echo "smoke match $m/$(wc -l < expected.txt)"); rm -f "$out"
+step smoke
+out=$(mktemp)
+(cd .ratchet/smoke && go run .) > "$out" 2>&1
+diff "$out" .ratchet/smoke/expected.txt || fail=1
+echo "smoke match $(grep -cxFf .ratchet/smoke/expected.txt "$out")/$(wc -l < .ratchet/smoke/expected.txt)"
+rm -f "$out"
 echo "== gate: $([ $fail = 0 ] && echo PASS || echo FAIL)"
 exit $fail

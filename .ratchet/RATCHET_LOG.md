@@ -127,3 +127,18 @@ Decision: implementer = main session; judge = fresh subagent per pass that sees 
 | reality | PASS (check.sh at 20e721f) | — |
 Convergence: sweep 2 → 3 of 4 lenses CONVERGED (75%) + bookend all CONVERGED; no high-impact backlog item remains; done signal met (see REPORT.md). Stopping.
 - Correction: 75% (sweep 2) / 78% (sweep 2 + bookend) is below the 80% convergence threshold. The stop condition that applies is "BRIEF.md's done signal is met and verified" (verified independently by the final reality gate).
+
+### Final gate (independent, fresh clone @ aed4256) — PASS
+- check.sh PASS; golangci-lint 0; gofmt clean; `go test -race -count=3` ok (no flakes); go1.19.13 ok; vet windows/darwin/darwin-arm64/freebsd/linux ok; smoke no diff; `go doc -all` declarations identical to 4be9157 on 4 GOOS; go.mod/go.sum unchanged.
+- Done signal **7/8**: EPERM-overwrite item NOT met — race-only, no test that failed first; fallback race remains where renameat2/renamex_np are unavailable (freebsd etc., ENOSYS/EINVAL).
+- aed4256 (bookend docs): KEEP — both sentences verified empirically.
+- Gate defect found: check.sh printed but did not fail on gofmt/lint/smoke regressions. All were clean, so no earlier verdict is affected.
+
+### S3 · reality(gate tooling) — KEPT — check.sh
+- Change: gofmt dirty, lint issues, and smoke diff now set fail=1. Verified: tampered expected.txt → exit 1; misformatted + errcheck-violating temp file → "gate: FAIL"; clean tree → PASS.
+
+### S3 · completeness / correctness / tests — CONVERGED (66 / 85 / 72)
+- Re-scored against the final gate's findings: no new reproducible defect; remaining items need fault injection or are race-only.
+
+## Sweep 3 scorecard
+All scored lenses CONVERGED (3/3); reality PASS. Stop: sweep ≥2 with ≥80% CONVERGED and no high-impact backlog item. Done signal 7/8 (not met in full; see REPORT.md).
