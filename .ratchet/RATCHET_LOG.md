@@ -60,3 +60,36 @@ Decision: implementer = main session; judge = fresh subagent per pass that sees 
 - Change: renameat2(RENAME_NOREPLACE) on linux/android, renamex_np(RENAME_EXCL) on darwin/ios; link+remove fallback elsewhere/unsupported.
 - Verified: TestRenameNoReplaceUnprivileged/source_not_removable failed first (alias left behind); check.sh PASS; cross-builds.
 - Judge: KEEP. Correction to Phase C claim: the EPERM overwrite is race-only (kernel returns EEXIST before may_linkat EPERM) — untested. Test fixes (skip-on-exec-failure, inverted comment) → 8579d37. Risk [UNVERIFIED]: a seccomp profile returning EPERM for renameat2 would now fail renames instead of falling back.
+
+### S1 · tests — KEPT — 40→72 — 8579d37
+- Critique: after 03d1959 the link+remove fallback was unreachable in tests on Linux; coverage 83.4→82.9%. Helper test failed instead of skipping when it could not exec.
+- Change: extracted renameLink; shared testRenameNoReplace runs against it on !windows; skip only on exec start failure.
+- Verified: coverage 84.9%; skip confirmed under 0700 TMPDIR; check.sh PASS.
+- Judge: KEEP; mutations "always os.Rename" and "skip remove" caught (old tests caught neither). Gaps (backlog): non-EEXIST link-error routing and remove-failure branch untested without fault injection.
+
+## Sweep 1 scorecard
+| Lens | Result | Score |
+|---|---|---|
+| correctness (occupied names) | KEPT 8b045a2 | 55→72 |
+| completeness (missing src) | KEPT fdd91fc | 55→66 |
+| correctness (dotfiles) | KEPT 38a057d | 55→85 |
+| correctness/security (atomic rename) | KEPT 03d1959 | 60→85 |
+| performance (Equal) | KEPT 7f6da45 | 20→90 |
+| simplify (Move) | KEPT 84af3c7 | 72→76 |
+| docs | KEPT 8bde877 | 70→84 |
+| architecture (lint) | KEPT 73c1085 | 55→80 |
+| ci (gofmt) | KEPT 53231c8 | 50→85 |
+| tests | KEPT 8579d37 | 40→72 |
+| reality (lens 15) | PASS — check.sh at 8579d37 | — |
+
+| Metric | Baseline | After S1 |
+|---|---|---|
+| Tests (RUN+subtests) | 93 | 139 |
+| Coverage | 83.4% | 84.9% |
+| golangci-lint | 11 (12 real) | 0 |
+| gofmt -l | 2 files | 0 |
+| Smoke match | 8/14 | 14/14 |
+| Equal 100 MB | ~865 ms | ~38 ms |
+| BenchmarkCopy 10 MB | ~22.9 ms | ~23.4 ms (noise) |
+| Cold build | ~8.3 s | ~7.8 s |
+| Prod Go lines | 714 | 825 |
