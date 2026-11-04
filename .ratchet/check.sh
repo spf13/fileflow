@@ -11,6 +11,6 @@ step lint;   golangci-lint run ./... 2>&1 | tail -3
 step test;   go test -race -count=1 ./... || fail=1
 step go1.19; GOTOOLCHAIN=go1.19.13 go test -count=1 ./... || fail=1
 step cross;  for os in windows darwin; do GOOS=$os go vet ./... || fail=1; done
-step smoke;  out=$(mktemp); (cd .ratchet/smoke && go run . > "$out" 2>&1; diff "$out" expected.txt; m=$(grep -cxFf expected.txt "$out"); echo "smoke match $m/$(wc -l < expected.txt)")
+step smoke;  out=$(mktemp); (cd .ratchet/smoke && go run . > "$out" 2>&1; diff "$out" expected.txt; m=$(grep -cxFf expected.txt "$out"); echo "smoke match $m/$(wc -l < expected.txt)"); rm -f "$out"
 echo "== gate: $([ $fail = 0 ] && echo PASS || echo FAIL)"
 exit $fail

@@ -14,3 +14,15 @@ Decision: implementer = main session; judge = fresh subagent per pass that sees 
 - Change: `taken()` (Lstat) for occupancy in resolveDst + Inc/Cont/TS; directory dst → `*ErrFailedMovingFile` wrapping fs.ErrExist; Equal only for regular files.
 - Verified: 3 new tests failed first (Onto dir ×3 ops, dangling symlink, strategies skip dir); check.sh PASS (go1.24 race, go1.19, win/darwin vet); smoke 8→12/14.
 - Judge: KEEP — real fix, tests fail on old code. Minor: missing src onto existing dir now says ErrExist not ErrNotExist (fixed next pass); docs not yet updated (docs lens).
+
+### S1 · completeness — KEPT — 55→66 — fdd91fc
+- Critique: missing src created dst parent dirs and, onto an existing dir, was misreported as ErrExist (fileflow.go:225,414).
+- Change: Lstat (Rename) / Stat (Copy) src before any destination work.
+- Verified: TestMissingSourceHasNoSideEffects failed first (3 ops); check.sh PASS; smoke 12→13/14.
+- Judge: KEEP. Minor residue (backlog): Rename(m,m)/Copy(m,m) on a missing path now ErrNotExist while Move(m,m) is ErrSameFile; cross-FS Move of a dangling-symlink src still mkdirs; Copy of a directory src fails late.
+
+### S1 · correctness(naming) — KEPT — 55→85 — 38a057d
+- Critique: filepath.Ext(".bashrc") == ".bashrc" → every strategy produced "-1.bashrc" (fileflow.go:270 et al.).
+- Change: splitExt helper (leading dot belongs to the name), replaces 4 copies of the split.
+- Verified: TestFindAvailableNameDotfiles failed first (8 asserts); check.sh PASS; smoke 13→14/14.
+- Judge: KEEP; 30-input old/new comparison found no change for ordinary names. Docs gap → docs lens.
