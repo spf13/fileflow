@@ -38,3 +38,13 @@ Decision: implementer = main session; judge = fresh subagent per pass that sees 
 - Change: deleted it. Move(p,p) with missing p now ErrNotExist (consistent with Rename/Copy).
 - Verified: check.sh PASS, smoke 14/14.
 - Judge: KEEP; alias matrix (spellings, hard/sym links, cross-device) identical before/after.
+
+### S1 · architecture(lint) — KEPT — 55→80 — 73c1085
+- Critique: golangci-lint errcheck 11 shown (12 real; default cap hid replace.go:58).
+- Change: explicit `_ =` on best-effort cleanup; benchmark uses b.TempDir and checks Remove.
+- Verified: golangci-lint 0 issues; check.sh PASS.
+- Judge: KEEP; written temp file's Sync/Close are checked on the success path, every ignored error is ignorable.
+
+### S1 · ci(gofmt) — KEPT — 50→85 — 53231c8
+- Change: one `gofmt -l` step on ubuntu/stable only (BRIEF allows exactly this).
+- Judge: KEEP; condition matches matrix strings; bash syntax valid.
