@@ -1708,3 +1708,39 @@ func TestFindAvailableNameDotfiles(t *testing.T) {
 		}
 	}
 }
+
+func TestReadersEqualChunkBoundaries(t *testing.T) {
+	const chunk = 64 * 1024
+	data := make([]byte, 2*chunk+1)
+	for i := range data {
+		data[i] = byte(i % 251)
+	}
+	flip := func(n, at int) []byte {
+		b := append([]byte(nil), data[:n]...)
+		b[at] ^= 0xff
+		return b
+	}
+	tests := []struct {
+		name string
+		a, b []byte
+		want bool
+	}{
+		{"one chunk", data[:chunk], data[:chunk], true},
+		{"two chunks", data[:2*chunk], data[:2*chunk], true},
+		{"two chunks plus one", data, data, true},
+		{"prefix ends on boundary", data[:chunk], data[:chunk+1], false},
+		{"longer ends on boundary", data[:chunk+1], data[:chunk], false},
+		{"prefix of two chunks", data[:2*chunk], data, false},
+		{"differs at first byte of second chunk", data[:2*chunk], flip(2*chunk, chunk), false},
+		{"differs at last byte of first chunk", data[:2*chunk], flip(2*chunk, chunk-1), false},
+		{"differs at final byte", data, flip(len(data), len(data)-1), false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := readersEqual(shortReader{r: bytes.NewReader(tt.a), max: 4093}, bytes.NewReader(tt.b))
+			if err != nil || got != tt.want {
+				t.Fatalf("readersEqual = %v, %v; want %v", got, err, tt.want)
+			}
+		})
+	}
+}

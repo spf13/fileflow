@@ -26,7 +26,7 @@ limitations under the License.
 package fileflow
 
 import (
-	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -400,24 +400,27 @@ func Equal(file1, file2 string) (bool, error) {
 }
 
 func readersEqual(r1, r2 io.Reader) (bool, error) {
-	b1 := bufio.NewReader(r1)
-	b2 := bufio.NewReader(r2)
+	const chunk = 64 * 1024
+	b1 := make([]byte, chunk)
+	b2 := make([]byte, chunk)
 
 	for {
-		byte1, err1 := b1.ReadByte()
-		byte2, err2 := b2.ReadByte()
-
-		if err1 != nil && err1 != io.EOF {
+		// ReadFull fills each buffer unless the reader ends, so short reads
+		// from either side cannot misalign the comparison.
+		n1, err1 := io.ReadFull(r1, b1)
+		if err1 != nil && err1 != io.EOF && err1 != io.ErrUnexpectedEOF {
 			return false, fmt.Errorf("reading first file: %w", err1)
 		}
-		if err2 != nil && err2 != io.EOF {
+		n2, err2 := io.ReadFull(r2, b2)
+		if err2 != nil && err2 != io.EOF && err2 != io.ErrUnexpectedEOF {
 			return false, fmt.Errorf("reading second file: %w", err2)
 		}
-		if err1 == io.EOF || err2 == io.EOF {
-			return err1 == io.EOF && err2 == io.EOF, nil
-		}
-		if byte1 != byte2 {
+		if !bytes.Equal(b1[:n1], b2[:n2]) {
 			return false, nil
+		}
+		if err1 != nil || err2 != nil {
+			// At least one reader ended; equal only if both did.
+			return err1 != nil && err2 != nil, nil
 		}
 	}
 }
