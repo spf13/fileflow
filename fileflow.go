@@ -216,6 +216,9 @@ func Rename(src, dst string) (string, error) {
 // It returns the final destination path. The rename never replaces an
 // existing file: if a concurrent writer claims the chosen name between
 // conflict resolution and the rename, Rename re-resolves and retries.
+// If dst is an existing directory, Rename fails with an *ErrFailedMovingFile
+// matching fs.ErrExist; it never renames into the directory. Move and Copy
+// behave the same way.
 func (f *Flow) Rename(src, dst string) (string, error) {
 	// Check src first so a missing source neither creates directories nor
 	// is misreported as a destination problem.
@@ -297,7 +300,11 @@ func splitExt(name string) (stem, ext string) {
 	return name[:len(name)-len(ext)], ext
 }
 
-// FindAvailableNameInc returns an available filename by incrementing a counter
+// FindAvailableNameInc returns an available filename by incrementing a
+// counter before the last extension: "a.txt" becomes "a-1.txt", "a.tar.gz"
+// becomes "a.tar-1.gz", and ".bashrc" becomes ".bashrc-1". A candidate is
+// available only if nothing exists at that path. All FindAvailableName
+// functions split names this way.
 func FindAvailableNameInc(baseName string) (string, error) {
 	nameWOExt, ext := splitExt(baseName)
 
