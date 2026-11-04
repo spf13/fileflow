@@ -8,11 +8,7 @@ import (
 )
 
 func BenchmarkCopy(b *testing.B) {
-	tmpDir, err := os.MkdirTemp("", "fileflow-bench-*")
-	if err != nil {
-		b.Fatal(err)
-	}
-	defer os.RemoveAll(tmpDir)
+	tmpDir := b.TempDir()
 
 	src := filepath.Join(tmpDir, "src.bin")
 	dst := filepath.Join(tmpDir, "dst.bin")
@@ -32,7 +28,9 @@ func BenchmarkCopy(b *testing.B) {
 		if err != nil {
 			b.Fatal(err)
 		}
-		os.Remove(dst)
+		if err := os.Remove(dst); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
 

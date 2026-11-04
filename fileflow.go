@@ -391,13 +391,13 @@ func Equal(file1, file2 string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("opening first file: %w", err)
 	}
-	defer f1.Close()
+	defer func() { _ = f1.Close() }() // read-only; nothing to flush
 
 	f2, err := os.Open(file2)
 	if err != nil {
 		return false, fmt.Errorf("opening second file: %w", err)
 	}
-	defer f2.Close()
+	defer func() { _ = f2.Close() }()
 
 	return readersEqual(f1, f2)
 }
@@ -470,7 +470,7 @@ func (f *Flow) Copy(src, dst string) (string, error) {
 		return "", err
 	}
 	// No-op after a successful rename; cleans up on every failure path.
-	defer os.Remove(tmpName)
+	defer func() { _ = os.Remove(tmpName) }()
 
 	for attempt := 0; attempt < maxIncrementAttempts; attempt++ {
 		err = renameNoReplace(tmpName, path)
@@ -501,7 +501,7 @@ func copyToTemp(src, dir string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("opening source file: %w", err)
 	}
-	defer sourceFile.Close()
+	defer func() { _ = sourceFile.Close() }() // read-only; nothing to flush
 
 	// Get source file info for permissions
 	sourceInfo, err := sourceFile.Stat()
@@ -517,8 +517,9 @@ func copyToTemp(src, dir string) (string, error) {
 	success := false
 	defer func() {
 		if !success {
-			tmp.Close()
-			os.Remove(tmpName)
+			// Best-effort cleanup; the original error is what matters.
+			_ = tmp.Close()
+			_ = os.Remove(tmpName)
 		}
 	}()
 

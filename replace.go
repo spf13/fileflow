@@ -55,7 +55,7 @@ func (f *Flow) Replace(src, dst string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	defer os.Remove(tmp)
+	defer func() { _ = os.Remove(tmp) }() // no-op after a successful publish
 	if err := renameReplace(tmp, dst); err != nil {
 		return "", &ErrFailedMovingFile{Err: err, Src: src, Dst: dst}
 	}
