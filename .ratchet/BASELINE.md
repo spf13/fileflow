@@ -25,3 +25,8 @@ Toolchain: go1.24.7 linux/amd64, golangci-lint 2.5.0. Running as root.
 
 ## Could not run
 - Windows / macOS paths (no host). Source-removal-failure test (root).
+
+## Post-brief additions
+- go1.19.13 (`GOTOOLCHAIN=go1.19.13 go test ./...`): PASS. `GOOS=windows|darwin go vet`: PASS.
+- Golden smoke (`.ratchet/smoke`, gate `.ratchet/check.sh`): **8/14** lines match expected.txt.
+  Mismatches: 3× onto-dir (ErrMaxAttemptsReached), dotfile (`-1.bashrc`), dangling dst, missing-src creates dirs.
