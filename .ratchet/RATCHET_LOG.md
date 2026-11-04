@@ -93,3 +93,36 @@ Decision: implementer = main session; judge = fresh subagent per pass that sees 
 | BenchmarkCopy 10 MB | ~22.9 ms | ~23.4 ms (noise) |
 | Cold build | ~8.3 s | ~7.8 s |
 | Prod Go lines | 714 | 825 |
+
+### S2 · docs — KEPT — 72→82 — 20e721f
+- Critique (from S1 docs judge): readme.md:78 stale "behavior is unchanged"; custom-strategy example used Exists (misses dirs/dangling links); Replace errors unlisted; Copy/Move doc comments lacked dir note.
+- Change: fixed each; README snippets re-compiled with go vet.
+- Judge: KEEP; example verified to skip dir/dangling candidates. Remaining pre-existing falsehood: Exists "regular file" → bookend.
+
+### S2 · completeness — CONVERGED — 66→66
+- Remaining items are low-impact or untestable without fault injection: Copy of a directory src fails late (after mkdir) with an accurate "is a directory" error; Copy returns "" if the fallback link succeeds but temp removal fails (unreachable on linux/darwin now); custom strategies returning another directory make Copy stage in the wrong dir. Not worth churn.
+
+### S2 · correctness — CONVERGED — 85→85
+- No reproducible defect left. Seccomp-EPERM-on-renameat2 risk recorded for human review.
+
+### S2 · tests — CONVERGED — 72→72
+- Remaining gaps need fault injection (BRIEF: no new abstractions). Nit (not changed, cosmetic): fileflow_test.go:79 param shadows renameNoReplace.
+
+### Bookend · architecture / simplify — CONVERGED
+- Re-read fileflow.go end to end. Candidates (inline fileMove; drop Equal's always-true final condition) are cosmetic; no deletion with real value left.
+
+### Bookend · ux / design (library: error text, godoc) — CONVERGED
+- Errors name the operation, both paths, and wrap the cause (e.g. "failed moving file a to dir: destination is a directory: file already exists").
+
+### Bookend · docs — aed4256 (judged in final gate)
+- Exists "regular file" was false (true for devices/FIFOs); ErrMaxAttemptsReached described too narrowly.
+
+## Sweep 2 scorecard
+| Lens | Result | Score |
+|---|---|---|
+| docs | KEPT 20e721f | 72→82 |
+| completeness | CONVERGED | 66 |
+| correctness | CONVERGED | 85 |
+| tests | CONVERGED | 72 |
+| reality | PASS (check.sh at 20e721f) | — |
+Convergence: sweep 2 → 3 of 4 lenses CONVERGED (75%) + bookend all CONVERGED; no high-impact backlog item remains; done signal met (see REPORT.md). Stopping.
