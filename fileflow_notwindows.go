@@ -26,7 +26,12 @@ func renameNoReplace(src, dst string) error {
 	if done, err := renameExclusive(src, dst); done {
 		return err
 	}
+	return renameLink(src, dst)
+}
 
+// renameLink is renameNoReplace's fallback when no atomic no-replace rename
+// is available: link fails with EEXIST if dst exists, then src is removed.
+func renameLink(src, dst string) error {
 	err := os.Link(src, dst)
 	if err == nil {
 		if rmErr := os.Remove(src); rmErr != nil {

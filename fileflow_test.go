@@ -71,6 +71,12 @@ func TestIsCrossDeviceError(t *testing.T) {
 }
 
 func TestRenameNoReplace(t *testing.T) {
+	testRenameNoReplace(t, renameNoReplace)
+}
+
+// testRenameNoReplace checks the no-replace contract of a rename
+// implementation.
+func testRenameNoReplace(t *testing.T, renameNoReplace func(src, dst string) error) {
 	tempDir := t.TempDir()
 
 	t.Run("moves when destination is free", func(t *testing.T) {

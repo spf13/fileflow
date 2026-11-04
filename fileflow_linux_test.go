@@ -75,7 +75,7 @@ func TestRenameNoReplaceUnprivileged(t *testing.T) {
 	})
 }
 
-// unprivilegedDir returns a temporary directory that nobody can write to.
+// unprivilegedDir returns a temporary directory the nobody user can write to.
 func unprivilegedDir(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -122,6 +122,12 @@ func runUnprivileged(t *testing.T, dir, src, dst string) string {
 	cmd.Env = append(os.Environ(), unprivSrcEnv+"="+src, unprivDstEnv+"="+dst)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: 65534, Gid: 65534}}
 	out, err := cmd.CombinedOutput()
+	var exitErr *exec.ExitError
+	if err != nil && !errors.As(err, &exitErr) {
+		// The helper never ran: noexec or unreachable temp dir, or uid
+		// 65534 unavailable (e.g. in a user namespace).
+		t.Skipf("cannot run helper as nobody: %v", err)
+	}
 	if err != nil {
 		t.Fatalf("helper failed: %v\n%s", err, out)
 	}
