@@ -161,10 +161,6 @@ func Move(src, dst string) (string, error) {
 // Move tries to move a file atomically using rename if possible,
 // falling back to copy+delete if files are on different filesystems.
 func (f *Flow) Move(src, dst string) (string, error) {
-	if sameFile(src, dst) {
-		return "", ErrSameFile
-	}
-
 	final, err := f.Rename(src, dst)
 	if err != nil {
 		if isCrossDeviceError(err) {
