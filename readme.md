@@ -75,7 +75,7 @@ fmt.Println("Published:", finalPath)
 
 `Flow.Replace` respects `DirMode` and `NoCreateDirs`; `FindAvailableName` is ignored. The source must be a regular file: symlinks and other non-regular sources return an error matching `fs.ErrInvalid`. A destination symlink is replaced, not followed. Paths identifying the same file return `ErrSameFile`, leaving it untouched.
 
-Before publication, failure preserves the existing destination and source and cleans up destination-side staging. If a cross-filesystem publication succeeds but source removal fails, the returned path is `dst` together with `*ErrFailedRemovingOriginal`; the new destination is already committed. Existing `Move`, `Copy`, and `Rename` behavior is unchanged.
+Before publication, failure preserves the existing destination and source and cleans up destination-side staging. If a cross-filesystem publication succeeds but source removal fails, the returned path is `dst` together with `*ErrFailedRemovingOriginal`; the new destination is already committed.
 
 ### Exists
 Reports whether an accessible regular file exists at the specified path. It returns false for directories.
@@ -145,7 +145,8 @@ func customNamingStrategy(baseName string) (string, error) {
     }
 
     newName := fmt.Sprintf("%s-%s%s", nameWOExt, string(suffix), ext)
-    if !fileflow.Exists(newName) {
+    // Any existing entry (file, directory, symlink) makes a name unavailable.
+    if _, err := os.Lstat(newName); errors.Is(err, fs.ErrNotExist) {
         return newName, nil
     }
     return "", fileflow.ErrMaxAttemptsReached
@@ -199,7 +200,7 @@ The package exposes sentinel errors for `errors.Is`:
 It also exposes structured errors for `errors.As`; both unwrap their underlying cause:
 
 * `ErrFailedRemovingOriginal`: Indicates failure to remove the original file after copying or deduplicating. Exposes `File` (the original path) and `Err`.
-* `ErrFailedMovingFile`: Indicates failure to rename a file from the source to the destination, including a missing source in `Move` or `Rename` (matches `fs.ErrNotExist`) and a destination that is an existing directory (matches `fs.ErrExist`). Exposes `Src`, `Dst`, and `Err`.
+* `ErrFailedMovingFile`: Indicates failure to rename a file from the source to the destination, including a missing source in `Move`, `Rename`, or `Replace` (matches `fs.ErrNotExist`), a non-regular `Replace` source (matches `fs.ErrInvalid`), and a destination that is an existing directory (matches `fs.ErrExist`). Exposes `Src`, `Dst`, and `Err`.
 
 ## Example
 

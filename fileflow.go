@@ -160,6 +160,8 @@ func Move(src, dst string) (string, error) {
 
 // Move tries to move a file atomically using rename if possible,
 // falling back to copy+delete if files are on different filesystems.
+// Conflicts are handled as in Rename; an existing directory at dst is an
+// error, not a place to move into.
 func (f *Flow) Move(src, dst string) (string, error) {
 	final, err := f.Rename(src, dst)
 	if err != nil {
@@ -303,8 +305,9 @@ func splitExt(name string) (stem, ext string) {
 // FindAvailableNameInc returns an available filename by incrementing a
 // counter before the last extension: "a.txt" becomes "a-1.txt", "a.tar.gz"
 // becomes "a.tar-1.gz", and ".bashrc" becomes ".bashrc-1". A candidate is
-// available only if nothing exists at that path. All FindAvailableName
-// functions split names this way.
+// available only if nothing exists at that path. FindAvailableNameCont,
+// FindAvailableNameAuto, and FindAvailableNameTS split the requested name
+// the same way.
 func FindAvailableNameInc(baseName string) (string, error) {
 	nameWOExt, ext := splitExt(baseName)
 
@@ -446,7 +449,9 @@ func Copy(src, dst string) (string, error) {
 // It returns the final destination path written, which may differ from dst
 // when a naming conflict was resolved. On error it returns an empty path.
 // The final rename never replaces an existing file: if a concurrent writer
-// claims the chosen name, Copy re-resolves and retries.
+// claims the chosen name, Copy re-resolves and retries. If dst is an
+// existing directory, Copy fails with an *ErrFailedMovingFile matching
+// fs.ErrExist.
 func (f *Flow) Copy(src, dst string) (string, error) {
 	if _, err := os.Stat(src); err != nil {
 		return "", fmt.Errorf("opening source file: %w", err)
