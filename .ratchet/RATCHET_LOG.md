@@ -48,3 +48,9 @@ Decision: implementer = main session; judge = fresh subagent per pass that sees 
 ### S1 · ci(gofmt) — KEPT — 50→85 — 53231c8
 - Change: one `gofmt -l` step on ubuntu/stable only (BRIEF allows exactly this).
 - Judge: KEEP; condition matches matrix strings; bash syntax valid.
+
+### S1 · docs — KEPT — 70→84 — 8bde877
+- Critique: README/doc comments silent on dir dst, dangling symlinks, dotfiles; "atomic link+remove on Unix" stale.
+- Change: README safety/naming/errors sections, Rename + FindAvailableNameInc doc comments.
+- Verified: README full example and Flow/custom/Replace snippets compile (go vet); check.sh PASS.
+- Judge: KEEP; all claims verified incl. strace of renameat2. Follow-ups (→S2 docs): readme.md:78 stale "behavior is unchanged"; custom-strategy example uses Exists/filepath.Ext (misses occupied non-files, dotfiles); Replace missing from ErrFailedMovingFile list; Copy/Move doc comments lack dir note.
