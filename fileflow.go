@@ -52,6 +52,10 @@ var (
 	ErrMaxAttemptsReached = errors.New("maximum increment attempts reached")
 )
 
+// errDstIsDir is returned, wrapped in ErrFailedMovingFile, when the
+// destination is an existing directory.
+var errDstIsDir = fmt.Errorf("destination is a directory: %w", fs.ErrExist)
+
 // contSuffixPattern matches a trailing "-N" counter (e.g. "-12") at the end
 // of a filename (extension already removed). Capture group 1 holds the digits.
 var contSuffixPattern = regexp.MustCompile(`-(\d+)$`)
@@ -180,16 +184,24 @@ func (f *Flow) resolveDst(src, dst string) (path string, identical bool, err err
 	if sameFile(src, dst) {
 		return "", false, ErrSameFile
 	}
-	if !Exists(dst) {
+	if !taken(dst) {
 		return dst, false, nil
 	}
-	same, err := Equal(src, dst)
-	if err != nil {
-		return "", false, fmt.Errorf("checking file identity: %w", err)
+	if info, err := os.Stat(dst); err == nil {
+		if info.IsDir() {
+			return "", false, &ErrFailedMovingFile{Err: errDstIsDir, Src: src, Dst: dst}
+		}
+		if info.Mode().IsRegular() {
+			same, err := Equal(src, dst)
+			if err != nil {
+				return "", false, fmt.Errorf("checking file identity: %w", err)
+			}
+			if same {
+				return dst, true, nil
+			}
+		}
 	}
-	if same {
-		return dst, true, nil
-	}
+	// dst holds different content, a dangling symlink, or a special file.
 	path, err = f.findAvailableName(dst)
 	if err != nil {
 		return "", false, fmt.Errorf("finding available name: %w", err)
@@ -265,6 +277,14 @@ func Exists(path string) bool {
 	return err == nil && !info.IsDir()
 }
 
+// taken reports whether anything, including a directory or a dangling
+// symlink, occupies path. Naming strategies use it so they never pick a
+// candidate that the no-replace rename would refuse.
+func taken(path string) bool {
+	_, err := os.Lstat(path)
+	return err == nil
+}
+
 // FindAvailableNameInc returns an available filename by incrementing a counter
 func FindAvailableNameInc(baseName string) (string, error) {
 	ext := filepath.Ext(baseName)
@@ -272,7 +292,7 @@ func FindAvailableNameInc(baseName string) (string, error) {
 
 	for i := 1; i <= maxIncrementAttempts; i++ {
 		newName := fmt.Sprintf("%s-%d%s", nameWOExt, i, ext)
-		if !Exists(newName) {
+		if !taken(newName) {
 			return newName, nil
 		}
 	}
@@ -300,7 +320,7 @@ func FindAvailableNameCont(baseName string) (string, error) {
 
 	for attempt := 0; attempt < maxIncrementAttempts; attempt++ {
 		candidate := fmt.Sprintf("%s-%d%s", base, start+attempt, ext)
-		if !Exists(candidate) {
+		if !taken(candidate) {
 			return candidate, nil
 		}
 	}
@@ -330,7 +350,7 @@ func FindAvailableNameTS(baseName string) (string, error) {
 	nameWOExt := baseName[:len(baseName)-len(ext)]
 	candidate := fmt.Sprintf("%s-%s%s", nameWOExt, time.Now().Format("20060102-150405.000000000"), ext)
 
-	if !Exists(candidate) {
+	if !taken(candidate) {
 		return candidate, nil
 	}
 
