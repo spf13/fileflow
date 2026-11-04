@@ -26,3 +26,15 @@ Decision: implementer = main session; judge = fresh subagent per pass that sees 
 - Change: splitExt helper (leading dot belongs to the name), replaces 4 copies of the split.
 - Verified: TestFindAvailableNameDotfiles failed first (8 asserts); check.sh PASS; smoke 13→14/14.
 - Judge: KEEP; 30-input old/new comparison found no change for ordinary names. Docs gap → docs lens.
+
+### S1 · performance — KEPT — 20→90 — 7f6da45
+- Critique: readersEqual compared byte-by-byte via bufio.ReadByte (~105 MB/s; 100 MB in ~865 ms).
+- Change: io.ReadFull 64 KiB chunks + bytes.Equal; BenchmarkEqual; chunk-boundary tests.
+- Verified: BenchmarkEqual 10 MiB 96 ms → 2.4 ms (~40×, implementer) / ~30× (judge); 100 MB 865 → 38 ms; check.sh PASS.
+- Judge: KEEP; 3000 randomized cases vs reference, mutation (ReadFull→Read) caught by tests. Minor: a reader returning (0,nil) forever would now spin (old bufio gave ErrNoProgress) — unreachable with *os.File.
+
+### S1 · simplify — KEPT — 72→76 — 84af3c7
+- Critique: Move's sameFile duplicated resolveDst's (fileflow.go:160).
+- Change: deleted it. Move(p,p) with missing p now ErrNotExist (consistent with Rename/Copy).
+- Verified: check.sh PASS, smoke 14/14.
+- Judge: KEEP; alias matrix (spellings, hard/sym links, cross-device) identical before/after.
