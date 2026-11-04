@@ -18,8 +18,8 @@ func replacementCrossDeviceSource(t *testing.T, destinationDir string) string {
 		t.Skipf("second filesystem unavailable: %v", err)
 	}
 	t.Cleanup(func() {
-		os.Chmod(dir, 0700)
-		os.RemoveAll(dir)
+		_ = os.Chmod(dir, 0700) // undo the read-only test directory
+		_ = os.RemoveAll(dir)
 	})
 	a, err := os.Stat(dir)
 	if err != nil {
@@ -73,7 +73,7 @@ func TestReplaceCrossFilesystemCopyReadFailure(t *testing.T) {
 	}
 	var probe [1]byte
 	_, readErr := file.Read(probe[:])
-	file.Close()
+	_ = file.Close()
 	if !errors.Is(readErr, syscall.EIO) {
 		t.Skipf("fixture does not produce EIO: %v", readErr)
 	}

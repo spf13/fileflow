@@ -1,0 +1,14 @@
+move-plain: out/a.txt ok src=false data=A
+move-conflict: out/a-1.txt ok data=B
+move-identical: out/a.txt ok src=false
+copy-conflict: out/a-2.txt ok src=true data=D
+copy-identical: out/a-2.txt ok
+move-crossfs: out/x.txt ok src=false data=X
+replace: cfg/app.toml ok data=v2
+move-onto-dir: "" ErrFailedMovingFile+ErrExist src=true
+copy-onto-dir: "" ErrFailedMovingFile+ErrExist src=true
+rename-onto-dir: "" ErrFailedMovingFile+ErrExist src=true
+dotfile-conflict: home/.bashrc-1 ok
+targz-conflict: t/x.tar-1.gz ok
+dangling-dst: dangling-1 ok
+missing-src: ErrNotExist dircreated=false

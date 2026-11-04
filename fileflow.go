@@ -26,7 +26,7 @@ limitations under the License.
 package fileflow
 
 import (
-	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -51,6 +51,10 @@ var (
 	ErrSameFile           = errors.New("source and destination are the same")
 	ErrMaxAttemptsReached = errors.New("maximum increment attempts reached")
 )
+
+// errDstIsDir is returned, wrapped in ErrFailedMovingFile, when the
+// destination is an existing directory.
+var errDstIsDir = fmt.Errorf("destination is a directory: %w", fs.ErrExist)
 
 // contSuffixPattern matches a trailing "-N" counter (e.g. "-12") at the end
 // of a filename (extension already removed). Capture group 1 holds the digits.
@@ -156,11 +160,9 @@ func Move(src, dst string) (string, error) {
 
 // Move tries to move a file atomically using rename if possible,
 // falling back to copy+delete if files are on different filesystems.
+// Conflicts are handled as in Rename; an existing directory at dst is an
+// error, not a place to move into.
 func (f *Flow) Move(src, dst string) (string, error) {
-	if sameFile(src, dst) {
-		return "", ErrSameFile
-	}
-
 	final, err := f.Rename(src, dst)
 	if err != nil {
 		if isCrossDeviceError(err) {
@@ -180,16 +182,24 @@ func (f *Flow) resolveDst(src, dst string) (path string, identical bool, err err
 	if sameFile(src, dst) {
 		return "", false, ErrSameFile
 	}
-	if !Exists(dst) {
+	if !taken(dst) {
 		return dst, false, nil
 	}
-	same, err := Equal(src, dst)
-	if err != nil {
-		return "", false, fmt.Errorf("checking file identity: %w", err)
+	if info, err := os.Stat(dst); err == nil {
+		if info.IsDir() {
+			return "", false, &ErrFailedMovingFile{Err: errDstIsDir, Src: src, Dst: dst}
+		}
+		if info.Mode().IsRegular() {
+			same, err := Equal(src, dst)
+			if err != nil {
+				return "", false, fmt.Errorf("checking file identity: %w", err)
+			}
+			if same {
+				return dst, true, nil
+			}
+		}
 	}
-	if same {
-		return dst, true, nil
-	}
+	// dst holds different content, a dangling symlink, or a special file.
 	path, err = f.findAvailableName(dst)
 	if err != nil {
 		return "", false, fmt.Errorf("finding available name: %w", err)
@@ -208,7 +218,15 @@ func Rename(src, dst string) (string, error) {
 // It returns the final destination path. The rename never replaces an
 // existing file: if a concurrent writer claims the chosen name between
 // conflict resolution and the rename, Rename re-resolves and retries.
+// If dst is an existing directory, Rename fails with an *ErrFailedMovingFile
+// matching fs.ErrExist; it never renames into the directory. Move and Copy
+// behave the same way.
 func (f *Flow) Rename(src, dst string) (string, error) {
+	// Check src first so a missing source neither creates directories nor
+	// is misreported as a destination problem.
+	if _, err := os.Lstat(src); err != nil {
+		return "", &ErrFailedMovingFile{Err: err, Src: src, Dst: dst}
+	}
 	for attempt := 0; attempt < maxIncrementAttempts; attempt++ {
 		path, identical, err := f.resolveDst(src, dst)
 		if err != nil {
@@ -265,14 +283,37 @@ func Exists(path string) bool {
 	return err == nil && !info.IsDir()
 }
 
-// FindAvailableNameInc returns an available filename by incrementing a counter
+// taken reports whether anything, including a directory or a dangling
+// symlink, occupies path. Naming strategies use it so they never pick a
+// candidate that the no-replace rename would refuse.
+func taken(path string) bool {
+	_, err := os.Lstat(path)
+	return err == nil
+}
+
+// splitExt splits name into everything before the extension and the
+// extension itself. A leading dot marks a hidden file, not an extension, so
+// ".bashrc" has none.
+func splitExt(name string) (stem, ext string) {
+	ext = filepath.Ext(name)
+	if ext == filepath.Base(name) {
+		ext = ""
+	}
+	return name[:len(name)-len(ext)], ext
+}
+
+// FindAvailableNameInc returns an available filename by incrementing a
+// counter before the last extension: "a.txt" becomes "a-1.txt", "a.tar.gz"
+// becomes "a.tar-1.gz", and ".bashrc" becomes ".bashrc-1". A candidate is
+// available only if nothing exists at that path. FindAvailableNameCont,
+// FindAvailableNameAuto, and FindAvailableNameTS split the requested name
+// the same way.
 func FindAvailableNameInc(baseName string) (string, error) {
-	ext := filepath.Ext(baseName)
-	nameWOExt := baseName[:len(baseName)-len(ext)]
+	nameWOExt, ext := splitExt(baseName)
 
 	for i := 1; i <= maxIncrementAttempts; i++ {
 		newName := fmt.Sprintf("%s-%d%s", nameWOExt, i, ext)
-		if !Exists(newName) {
+		if !taken(newName) {
 			return newName, nil
 		}
 	}
@@ -286,8 +327,7 @@ func FindAvailableNameInc(baseName string) (string, error) {
 // Do not use this strategy when filenames end in meaningful digits
 // (e.g. years): "report-2024.txt" would continue as "report-2025.txt".
 func FindAvailableNameCont(baseName string) (string, error) {
-	ext := filepath.Ext(baseName)
-	nameWOExt := baseName[:len(baseName)-len(ext)]
+	nameWOExt, ext := splitExt(baseName)
 
 	base := nameWOExt
 	start := 1
@@ -300,7 +340,7 @@ func FindAvailableNameCont(baseName string) (string, error) {
 
 	for attempt := 0; attempt < maxIncrementAttempts; attempt++ {
 		candidate := fmt.Sprintf("%s-%d%s", base, start+attempt, ext)
-		if !Exists(candidate) {
+		if !taken(candidate) {
 			return candidate, nil
 		}
 	}
@@ -315,9 +355,7 @@ func FindAvailableNameCont(baseName string) (string, error) {
 // (e.g. "report-2024", "img-001") are assumed to be meaningful and are
 // preserved, appending a new counter like FindAvailableNameInc.
 func FindAvailableNameAuto(baseName string) (string, error) {
-	ext := filepath.Ext(baseName)
-	nameWOExt := baseName[:len(baseName)-len(ext)]
-
+	nameWOExt, _ := splitExt(baseName)
 	if m := contSuffixPattern.FindStringSubmatch(nameWOExt); m != nil && len(m[1]) <= 2 {
 		return FindAvailableNameCont(baseName)
 	}
@@ -326,11 +364,10 @@ func FindAvailableNameAuto(baseName string) (string, error) {
 
 // FindAvailableNameTS returns an available filename by appending a timestamp.
 func FindAvailableNameTS(baseName string) (string, error) {
-	ext := filepath.Ext(baseName)
-	nameWOExt := baseName[:len(baseName)-len(ext)]
+	nameWOExt, ext := splitExt(baseName)
 	candidate := fmt.Sprintf("%s-%s%s", nameWOExt, time.Now().Format("20060102-150405.000000000"), ext)
 
-	if !Exists(candidate) {
+	if !taken(candidate) {
 		return candidate, nil
 	}
 
@@ -357,36 +394,39 @@ func Equal(file1, file2 string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("opening first file: %w", err)
 	}
-	defer f1.Close()
+	defer func() { _ = f1.Close() }() // read-only; nothing to flush
 
 	f2, err := os.Open(file2)
 	if err != nil {
 		return false, fmt.Errorf("opening second file: %w", err)
 	}
-	defer f2.Close()
+	defer func() { _ = f2.Close() }()
 
 	return readersEqual(f1, f2)
 }
 
 func readersEqual(r1, r2 io.Reader) (bool, error) {
-	b1 := bufio.NewReader(r1)
-	b2 := bufio.NewReader(r2)
+	const chunk = 64 * 1024
+	b1 := make([]byte, chunk)
+	b2 := make([]byte, chunk)
 
 	for {
-		byte1, err1 := b1.ReadByte()
-		byte2, err2 := b2.ReadByte()
-
-		if err1 != nil && err1 != io.EOF {
+		// ReadFull fills each buffer unless the reader ends, so short reads
+		// from either side cannot misalign the comparison.
+		n1, err1 := io.ReadFull(r1, b1)
+		if err1 != nil && err1 != io.EOF && err1 != io.ErrUnexpectedEOF {
 			return false, fmt.Errorf("reading first file: %w", err1)
 		}
-		if err2 != nil && err2 != io.EOF {
+		n2, err2 := io.ReadFull(r2, b2)
+		if err2 != nil && err2 != io.EOF && err2 != io.ErrUnexpectedEOF {
 			return false, fmt.Errorf("reading second file: %w", err2)
 		}
-		if err1 == io.EOF || err2 == io.EOF {
-			return err1 == io.EOF && err2 == io.EOF, nil
-		}
-		if byte1 != byte2 {
+		if !bytes.Equal(b1[:n1], b2[:n2]) {
 			return false, nil
+		}
+		if err1 != nil || err2 != nil {
+			// At least one reader ended; equal only if both did.
+			return err1 != nil && err2 != nil, nil
 		}
 	}
 }
@@ -409,8 +449,13 @@ func Copy(src, dst string) (string, error) {
 // It returns the final destination path written, which may differ from dst
 // when a naming conflict was resolved. On error it returns an empty path.
 // The final rename never replaces an existing file: if a concurrent writer
-// claims the chosen name, Copy re-resolves and retries.
+// claims the chosen name, Copy re-resolves and retries. If dst is an
+// existing directory, Copy fails with an *ErrFailedMovingFile matching
+// fs.ErrExist.
 func (f *Flow) Copy(src, dst string) (string, error) {
+	if _, err := os.Stat(src); err != nil {
+		return "", fmt.Errorf("opening source file: %w", err)
+	}
 	if !f.NoCreateDirs {
 		if err := os.MkdirAll(filepath.Dir(dst), f.dirMode()); err != nil {
 			return "", fmt.Errorf("creating destination directory: %w", err)
@@ -430,7 +475,7 @@ func (f *Flow) Copy(src, dst string) (string, error) {
 		return "", err
 	}
 	// No-op after a successful rename; cleans up on every failure path.
-	defer os.Remove(tmpName)
+	defer func() { _ = os.Remove(tmpName) }()
 
 	for attempt := 0; attempt < maxIncrementAttempts; attempt++ {
 		err = renameNoReplace(tmpName, path)
@@ -461,7 +506,7 @@ func copyToTemp(src, dir string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("opening source file: %w", err)
 	}
-	defer sourceFile.Close()
+	defer func() { _ = sourceFile.Close() }() // read-only; nothing to flush
 
 	// Get source file info for permissions
 	sourceInfo, err := sourceFile.Stat()
@@ -477,8 +522,9 @@ func copyToTemp(src, dir string) (string, error) {
 	success := false
 	defer func() {
 		if !success {
-			tmp.Close()
-			os.Remove(tmpName)
+			// Best-effort cleanup; the original error is what matters.
+			_ = tmp.Close()
+			_ = os.Remove(tmpName)
 		}
 	}()
 

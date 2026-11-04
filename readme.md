@@ -16,7 +16,7 @@ The `fileflow` package provides utilities to safely move, copy, rename, and expl
 
 ## Safety guarantees
 
-`Move`, `Copy`, and `Rename` never overwrite a non-identical file. Renames use no-replace primitives (`MoveFileEx` without `MOVEFILE_REPLACE_EXISTING` on Windows, atomic link+remove on Unix), so even a file created by a concurrent process between conflict resolution and the rename is safe: FileFlow detects the collision, resolves a new name, and retries. On Unix filesystems without hard link support (e.g. FAT), the rename falls back to a plain rename and the no-overwrite guarantee is best-effort. Copies are written to a temporary file in the destination directory, synced, set to the source file's mode, and renamed into place with the same no-replace primitive, so a failed copy does not leave a partial or truncated destination. When the destination is identical to the source, FileFlow deduplicates the operation instead of writing another copy.
+`Move`, `Copy`, and `Rename` never overwrite a non-identical file. Renames use no-replace primitives (`renameat2` with `RENAME_NOREPLACE` on Linux, `renamex_np` with `RENAME_EXCL` on macOS, `MoveFileEx` without `MOVEFILE_REPLACE_EXISTING` on Windows, link+remove on other Unix systems or where the atomic call is unsupported), so even a file created by a concurrent process between conflict resolution and the rename is safe: FileFlow detects the collision, resolves a new name, and retries. Where neither an atomic no-replace rename nor a hard link is possible (e.g. FAT on a system without `renameat2`), the rename falls back to a plain rename and the no-overwrite guarantee is best-effort. Copies are written to a temporary file in the destination directory, synced, set to the source file's mode, and renamed into place with the same no-replace primitive, so a failed copy does not leave a partial or truncated destination. When the destination is identical to the source, FileFlow deduplicates the operation instead of writing another copy. Any existing entry counts as an occupied name: a dangling symlink or special file at the destination gets a conflict suffix, and a destination that is an existing directory fails immediately with an `*ErrFailedMovingFile` matching `fs.ErrExist`. FileFlow never moves a file *into* a directory; pass the full destination file path.
 
 `Replace` is the explicit exception: it intentionally overwrites the exact destination, without conflict naming or a delete-then-move window. On the same filesystem it publishes by rename; across filesystems it first copies and syncs a temporary file in the destination directory, publishes that file, and then removes the source. The destination receives the source file's permissions. Atomic visibility requires filesystem rename support; this is not a promise of power-loss durability. Sync and close your staged source before calling `Replace` when durability matters. On Windows, open-file sharing rules can reject a replacement; the error is returned rather than deleting the old destination.
 
@@ -75,10 +75,10 @@ fmt.Println("Published:", finalPath)
 
 `Flow.Replace` respects `DirMode` and `NoCreateDirs`; `FindAvailableName` is ignored. The source must be a regular file: symlinks and other non-regular sources return an error matching `fs.ErrInvalid`. A destination symlink is replaced, not followed. Paths identifying the same file return `ErrSameFile`, leaving it untouched.
 
-Before publication, failure preserves the existing destination and source and cleans up destination-side staging. If a cross-filesystem publication succeeds but source removal fails, the returned path is `dst` together with `*ErrFailedRemovingOriginal`; the new destination is already committed. Existing `Move`, `Copy`, and `Rename` behavior is unchanged.
+Before publication, failure preserves the existing destination and source and cleans up destination-side staging. If a cross-filesystem publication succeeds but source removal fails, the returned path is `dst` together with `*ErrFailedRemovingOriginal`; the new destination is already committed.
 
 ### Exists
-Reports whether an accessible regular file exists at the specified path. It returns false for directories.
+Reports whether an accessible entry other than a directory exists at the specified path, following symlinks. It returns false for directories, missing paths, and dangling symlinks.
 
 ```go
 exists := fileflow.Exists("path/to/file.txt")
@@ -104,10 +104,12 @@ if identical {
 FileFlow provides four naming strategies for handling conflicts. The default preserves the complete requested name before appending a counter; the continuation strategy treats a trailing `-N` as an existing counter. FileFlow cannot know whether trailing digits are a counter or meaningful data, so choose the behavior that fits your filenames.
 
 #### FindAvailableNameInc (Default)
-The default implementation always appends `-1`, `-2`, and so on. It tries up to 100 candidates, then returns `ErrMaxAttemptsReached`. Existing numeric endings are preserved:
+The default implementation always appends `-1`, `-2`, and so on. It tries up to 100 candidates, then returns `ErrMaxAttemptsReached`. Existing numeric endings are preserved, the suffix goes before the last extension only, and a leading dot belongs to the name:
 - For "document.txt", generates "document-1.txt", "document-2.txt", etc.
 - For "report-2024.txt", generates "report-2024-1.txt", not "report-1.txt".
 - For "file-1.txt", generates "file-1-1.txt".
+- For "archive.tar.gz", generates "archive.tar-1.gz".
+- For ".bashrc", generates ".bashrc-1"; for ".config.json", ".config-1.json".
 
 #### FindAvailableNameCont
 This implementation treats a trailing `-N` suffix as a counter and continues from `N+1`. If "file-1.txt", "file-2.txt", and "file-3.txt" exist, requesting "file-1.txt" yields "file-4.txt". A name without a trailing `-N` behaves like `FindAvailableNameInc`.
@@ -143,7 +145,8 @@ func customNamingStrategy(baseName string) (string, error) {
     }
 
     newName := fmt.Sprintf("%s-%s%s", nameWOExt, string(suffix), ext)
-    if !fileflow.Exists(newName) {
+    // Any existing entry (file, directory, symlink) makes a name unavailable.
+    if _, err := os.Lstat(newName); errors.Is(err, fs.ErrNotExist) {
         return newName, nil
     }
     return "", fileflow.ErrMaxAttemptsReached
@@ -192,12 +195,12 @@ The maximum number of incrementing candidates is an internal constant of 100 and
 The package exposes sentinel errors for `errors.Is`:
 
 * `ErrSameFile`: The source and destination refer to the same underlying file, including through different paths.
-* `ErrMaxAttemptsReached`: The incrementing naming strategy exhausted its 100 attempts.
+* `ErrMaxAttemptsReached`: A naming strategy found no free candidate (the counter strategies try 100), or `Move`, `Copy`, or `Rename` lost the race for a chosen name 100 times in a row.
 
 It also exposes structured errors for `errors.As`; both unwrap their underlying cause:
 
 * `ErrFailedRemovingOriginal`: Indicates failure to remove the original file after copying or deduplicating. Exposes `File` (the original path) and `Err`.
-* `ErrFailedMovingFile`: Indicates failure to rename a file from the source to the destination. Exposes `Src`, `Dst`, and `Err`.
+* `ErrFailedMovingFile`: Indicates failure to rename a file from the source to the destination, including a missing source in `Move`, `Rename`, or `Replace` (matches `fs.ErrNotExist`), a non-regular `Replace` source (matches `fs.ErrInvalid`), and a destination that is an existing directory (matches `fs.ErrExist`). Exposes `Src`, `Dst`, and `Err`.
 
 ## Example
 
