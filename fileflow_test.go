@@ -1675,3 +1675,36 @@ func TestMissingSourceHasNoSideEffects(t *testing.T) {
 		})
 	}
 }
+
+func TestFindAvailableNameDotfiles(t *testing.T) {
+	dir := t.TempDir()
+	// A leading dot marks a hidden file, not an extension.
+	cases := []struct {
+		base, inc, cont, tsPrefix, tsExt string
+	}{
+		{".bashrc", ".bashrc-1", ".bashrc-1", ".bashrc-", ""},
+		{".config.json", ".config-1.json", ".config-1.json", ".config-", ".json"},
+		{".env-3", ".env-3-1", ".env-4", ".env-3-", ""},
+	}
+	for _, c := range cases {
+		base := filepath.Join(dir, c.base)
+		check := func(fn string, got string, err error, want string) {
+			t.Helper()
+			if err != nil || filepath.Base(got) != want {
+				t.Errorf("%s(%q) = %q, %v; want %q", fn, c.base, filepath.Base(got), err, want)
+			}
+		}
+		got, err := FindAvailableNameInc(base)
+		check("FindAvailableNameInc", got, err, c.inc)
+		got, err = FindAvailableNameCont(base)
+		check("FindAvailableNameCont", got, err, c.cont)
+		got, err = FindAvailableNameAuto(base)
+		check("FindAvailableNameAuto", got, err, c.cont)
+
+		got, err = FindAvailableNameTS(base)
+		tsName := regexp.MustCompile(`^` + regexp.QuoteMeta(c.tsPrefix) + `\d{8}-\d{6}\.\d{9}` + regexp.QuoteMeta(c.tsExt) + `$`)
+		if err != nil || !tsName.MatchString(filepath.Base(got)) {
+			t.Errorf("FindAvailableNameTS(%q) = %q, %v; want match for %s", c.base, filepath.Base(got), err, tsName)
+		}
+	}
+}

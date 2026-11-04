@@ -290,10 +290,20 @@ func taken(path string) bool {
 	return err == nil
 }
 
+// splitExt splits name into everything before the extension and the
+// extension itself. A leading dot marks a hidden file, not an extension, so
+// ".bashrc" has none.
+func splitExt(name string) (stem, ext string) {
+	ext = filepath.Ext(name)
+	if ext == filepath.Base(name) {
+		ext = ""
+	}
+	return name[:len(name)-len(ext)], ext
+}
+
 // FindAvailableNameInc returns an available filename by incrementing a counter
 func FindAvailableNameInc(baseName string) (string, error) {
-	ext := filepath.Ext(baseName)
-	nameWOExt := baseName[:len(baseName)-len(ext)]
+	nameWOExt, ext := splitExt(baseName)
 
 	for i := 1; i <= maxIncrementAttempts; i++ {
 		newName := fmt.Sprintf("%s-%d%s", nameWOExt, i, ext)
@@ -311,8 +321,7 @@ func FindAvailableNameInc(baseName string) (string, error) {
 // Do not use this strategy when filenames end in meaningful digits
 // (e.g. years): "report-2024.txt" would continue as "report-2025.txt".
 func FindAvailableNameCont(baseName string) (string, error) {
-	ext := filepath.Ext(baseName)
-	nameWOExt := baseName[:len(baseName)-len(ext)]
+	nameWOExt, ext := splitExt(baseName)
 
 	base := nameWOExt
 	start := 1
@@ -340,9 +349,7 @@ func FindAvailableNameCont(baseName string) (string, error) {
 // (e.g. "report-2024", "img-001") are assumed to be meaningful and are
 // preserved, appending a new counter like FindAvailableNameInc.
 func FindAvailableNameAuto(baseName string) (string, error) {
-	ext := filepath.Ext(baseName)
-	nameWOExt := baseName[:len(baseName)-len(ext)]
-
+	nameWOExt, _ := splitExt(baseName)
 	if m := contSuffixPattern.FindStringSubmatch(nameWOExt); m != nil && len(m[1]) <= 2 {
 		return FindAvailableNameCont(baseName)
 	}
@@ -351,8 +358,7 @@ func FindAvailableNameAuto(baseName string) (string, error) {
 
 // FindAvailableNameTS returns an available filename by appending a timestamp.
 func FindAvailableNameTS(baseName string) (string, error) {
-	ext := filepath.Ext(baseName)
-	nameWOExt := baseName[:len(baseName)-len(ext)]
+	nameWOExt, ext := splitExt(baseName)
 	candidate := fmt.Sprintf("%s-%s%s", nameWOExt, time.Now().Format("20060102-150405.000000000"), ext)
 
 	if !taken(candidate) {
