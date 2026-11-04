@@ -1648,3 +1648,30 @@ func TestFindAvailableNameSkipsNonFiles(t *testing.T) {
 		}
 	}
 }
+
+func TestMissingSourceHasNoSideEffects(t *testing.T) {
+	ops := map[string]func(string, string) (string, error){
+		"Move": Move, "Copy": Copy, "Rename": Rename,
+	}
+	for name, op := range ops {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			src := filepath.Join(dir, "missing.txt")
+			if err := os.Mkdir(filepath.Join(dir, "existing"), 0755); err != nil {
+				t.Fatal(err)
+			}
+			for _, dst := range []string{
+				filepath.Join(dir, "new", "deep", "dst.txt"),
+				filepath.Join(dir, "existing"),
+			} {
+				got, err := op(src, dst)
+				if got != "" || !errors.Is(err, fs.ErrNotExist) {
+					t.Fatalf("%s(missing, %q) = %q, %v; want \"\", fs.ErrNotExist", name, dst, got, err)
+				}
+			}
+			if _, err := os.Stat(filepath.Join(dir, "new")); !errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("%s created destination directories for a missing source", name)
+			}
+		})
+	}
+}

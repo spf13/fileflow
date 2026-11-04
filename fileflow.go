@@ -221,6 +221,11 @@ func Rename(src, dst string) (string, error) {
 // existing file: if a concurrent writer claims the chosen name between
 // conflict resolution and the rename, Rename re-resolves and retries.
 func (f *Flow) Rename(src, dst string) (string, error) {
+	// Check src first so a missing source neither creates directories nor
+	// is misreported as a destination problem.
+	if _, err := os.Lstat(src); err != nil {
+		return "", &ErrFailedMovingFile{Err: err, Src: src, Dst: dst}
+	}
 	for attempt := 0; attempt < maxIncrementAttempts; attempt++ {
 		path, identical, err := f.resolveDst(src, dst)
 		if err != nil {
@@ -431,6 +436,9 @@ func Copy(src, dst string) (string, error) {
 // The final rename never replaces an existing file: if a concurrent writer
 // claims the chosen name, Copy re-resolves and retries.
 func (f *Flow) Copy(src, dst string) (string, error) {
+	if _, err := os.Stat(src); err != nil {
+		return "", fmt.Errorf("opening source file: %w", err)
+	}
 	if !f.NoCreateDirs {
 		if err := os.MkdirAll(filepath.Dir(dst), f.dirMode()); err != nil {
 			return "", fmt.Errorf("creating destination directory: %w", err)
