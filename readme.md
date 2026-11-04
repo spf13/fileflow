@@ -78,7 +78,7 @@ fmt.Println("Published:", finalPath)
 Before publication, failure preserves the existing destination and source and cleans up destination-side staging. If a cross-filesystem publication succeeds but source removal fails, the returned path is `dst` together with `*ErrFailedRemovingOriginal`; the new destination is already committed.
 
 ### Exists
-Reports whether an accessible regular file exists at the specified path. It returns false for directories.
+Reports whether an accessible entry other than a directory exists at the specified path, following symlinks. It returns false for directories, missing paths, and dangling symlinks.
 
 ```go
 exists := fileflow.Exists("path/to/file.txt")
@@ -195,7 +195,7 @@ The maximum number of incrementing candidates is an internal constant of 100 and
 The package exposes sentinel errors for `errors.Is`:
 
 * `ErrSameFile`: The source and destination refer to the same underlying file, including through different paths.
-* `ErrMaxAttemptsReached`: The incrementing naming strategy exhausted its 100 attempts.
+* `ErrMaxAttemptsReached`: A naming strategy found no free candidate (the counter strategies try 100), or `Move`, `Copy`, or `Rename` lost the race for a chosen name 100 times in a row.
 
 It also exposes structured errors for `errors.As`; both unwrap their underlying cause:
 
