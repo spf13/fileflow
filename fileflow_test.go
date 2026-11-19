@@ -26,6 +26,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -1933,5 +1934,48 @@ func TestEqualHonoursContext(t *testing.T) {
 	}
 	if same, err := equal(context.Background(), a, b); !same || err != nil {
 		t.Fatalf("equal = %v, %v; want true, nil", same, err)
+	}
+}
+
+// flipContext reports no error on its first Err call and context.Canceled
+// afterwards, cancelling after MoveContext's entry check.
+type flipContext struct {
+	context.Context
+	calls *atomic.Int32
+}
+
+var closedDone = func() chan struct{} { c := make(chan struct{}); close(c); return c }()
+
+func (c flipContext) Done() <-chan struct{} { return closedDone }
+
+func (c flipContext) Err() error {
+	if c.calls.Add(1) == 1 {
+		return nil
+	}
+	return context.Canceled
+}
+
+func TestMoveContextCancelDuringRenameCompare(t *testing.T) {
+	dir := t.TempDir()
+	src, dst := filepath.Join(dir, "src"), filepath.Join(dir, "dst")
+	data := writeSizedFixture(t, src, 3<<20)
+	other := bytes.Clone(data)
+	other[len(other)-1] ^= 0xff
+	if err := os.WriteFile(dst, other, 0644); err != nil {
+		t.Fatal(err)
+	}
+	ctx := flipContext{Context: context.Background(), calls: new(atomic.Int32)}
+	final, err := MoveContext(ctx, src, dst)
+	if final != "" || !errors.Is(err, context.Canceled) {
+		t.Fatalf("MoveContext = %q, %v; want \"\", context.Canceled", final, err)
+	}
+	assertContents(t, src, data)
+	assertContents(t, dst, other)
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 2 {
+		t.Errorf("directory entries = %v; want only src and dst", entries)
 	}
 }

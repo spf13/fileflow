@@ -259,8 +259,9 @@ func (f *Flow) Move(src, dst string) (string, error) {
 }
 
 // MoveContext is like Move but honours ctx. It returns ctx's error, wrapped
-// in *ErrFailedMovingFile, if ctx is done before the move starts. A
-// same-filesystem rename is not interrupted. Across filesystems the copy is
+// in *ErrFailedMovingFile, if ctx is done before the move starts or while
+// comparing against an existing destination; src is left intact. The rename
+// itself is not interrupted. Across filesystems the copy is
 // cancelled between chunks and its temporary file removed, leaving src
 // intact; once the destination is published the move completes, including
 // removal of src.
@@ -275,7 +276,7 @@ func (f *Flow) MoveContext(ctx context.Context, src, dst string) (string, error)
 		return "", ErrSameFile
 	}
 
-	final, err := f.Rename(src, dst)
+	final, err := f.rename(ctx, src, dst)
 	if err != nil {
 		if isCrossDeviceError(err) {
 			// If the file is on a different drive, copy it instead
@@ -383,10 +384,16 @@ func (f *Flow) publishWithRetry(
 // existing file: if a concurrent writer claims the chosen name between
 // conflict resolution and the rename, Rename re-resolves and retries.
 func (f *Flow) Rename(src, dst string) (string, error) {
+	return f.rename(context.Background(), src, dst)
+}
+
+// rename is Rename, honouring ctx while comparing against an existing
+// destination.
+func (f *Flow) rename(ctx context.Context, src, dst string) (string, error) {
 	if err := f.validateRegularFile(src, dst); err != nil {
 		return "", err
 	}
-	return f.publishWithRetry(context.Background(), src, dst, func() error {
+	return f.publishWithRetry(ctx, src, dst, func() error {
 		if err := os.Remove(src); err != nil {
 			return &ErrFailedRemovingOriginal{Err: err, File: src}
 		}
