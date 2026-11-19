@@ -49,7 +49,7 @@ func (f *Flow) Replace(src, dst string) (string, error) {
 	}
 
 	// Publish only after copying and syncing the full file on the target volume.
-	tmp, err := copyToTemp(src, filepath.Dir(dst))
+	tmp, err := copyToTemp(src, filepath.Dir(dst), !f.NoPreserveTimes)
 	if err != nil {
 		return "", &ErrFailedMovingFile{Err: err, Src: src, Dst: dst}
 	}
@@ -63,6 +63,7 @@ func (f *Flow) Replace(src, dst string) (string, error) {
 	}
 	return dst, nil
 }
+
 // sameFileReplace reports whether src and dst refer to the same file without
 // following a symlink at dst. srcInfo is the Lstat of src.
 func sameFileReplace(src, dst string, srcInfo os.FileInfo) bool {

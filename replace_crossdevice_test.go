@@ -59,6 +59,29 @@ func TestReplaceCrossFilesystem(t *testing.T) {
 	assertReplacementDirectory(t, dstDir, "deck")
 }
 
+func TestMoveCrossFilesystemPreservesTimes(t *testing.T) {
+	dstDir := t.TempDir()
+	srcDir := replacementCrossDeviceSource(t, dstDir)
+	src, dst := filepath.Join(srcDir, "stage"), filepath.Join(dstDir, "deck")
+	writeTimedFixture(t, src)
+	if _, err := Move(src, dst); err != nil {
+		t.Fatalf("Move() error: %v", err)
+	}
+	assertFixtureTimes(t, dst)
+}
+
+func TestReplaceCrossFilesystemPreservesTimes(t *testing.T) {
+	dstDir := t.TempDir()
+	srcDir := replacementCrossDeviceSource(t, dstDir)
+	src, dst := filepath.Join(srcDir, "stage"), filepath.Join(dstDir, "deck")
+	writeTimedFixture(t, src)
+	writeReplacementFixture(t, dst, "old deck")
+	if _, err := Replace(src, dst); err != nil {
+		t.Fatalf("Replace() error: %v", err)
+	}
+	assertFixtureTimes(t, dst)
+}
+
 func TestReplaceCrossFilesystemCopyReadFailure(t *testing.T) {
 	// This regular procfs file opens but reading its unmapped zero address fails
 	// with EIO, exercising a real io.Copy error without filesystem mocks/hooks.

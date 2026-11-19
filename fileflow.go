@@ -77,6 +77,15 @@ type Flow struct {
 	// and the link error is returned instead, preventing silent overwrite
 	// of a concurrently created destination.
 	AllowOverwriteFallback bool
+
+	// NoPreserveTimes, when true, leaves copied files with the times of the
+	// copy. When false (the default), copies made by Copy, and by Move and
+	// Replace across filesystems, set the destination's modification and
+	// access times to the source's. Preservation is best-effort: errors
+	// setting times are ignored, and precision is limited by the destination
+	// filesystem (FAT: 2 s mtime, date-only atime; exFAT: 10 ms).
+	// Same-filesystem renames always keep times because no copy happens.
+	NoPreserveTimes bool
 }
 
 // findAvailableName resolves the configured naming strategy, defaulting to
@@ -504,7 +513,7 @@ func (f *Flow) Copy(src, dst string) (string, error) {
 	return f.publishWithRetry(src, dst, func() error {
 		return nil
 	}, func() (string, func(), error) {
-		tmpName, err := copyToTemp(src, filepath.Dir(dst))
+		tmpName, err := copyToTemp(src, filepath.Dir(dst), !f.NoPreserveTimes)
 		if err != nil {
 			return "", nil, err
 		}
@@ -513,15 +522,17 @@ func (f *Flow) Copy(src, dst string) (string, error) {
 }
 
 // copyToTemp copies src to a new temporary file in dir, preserving src's
-// permission mode, and returns the temporary file's path.
-func copyToTemp(src, dir string) (string, error) {
+// permission mode and, when preserveTimes is set, its modification and access
+// times (best-effort). It returns the temporary file's path.
+func copyToTemp(src, dir string, preserveTimes bool) (string, error) {
 	sourceFile, err := os.Open(src)
 	if err != nil {
 		return "", fmt.Errorf("opening source file: %w", err)
 	}
 	defer sourceFile.Close()
 
-	// Get source file info for permissions
+	// Stat the open source before io.Copy so the captured access time is the
+	// pre-copy value, not one bumped by reading the file.
 	sourceInfo, err := sourceFile.Stat()
 	if err != nil {
 		return "", fmt.Errorf("getting source file info: %w", err)
@@ -554,6 +565,13 @@ func copyToTemp(src, dir string) (string, error) {
 
 	if err := tmp.Close(); err != nil {
 		return "", fmt.Errorf("closing temporary destination file: %w", err)
+	}
+
+	// Set times after Close, which can update mtime on some platforms.
+	// Best-effort: some filesystems (SMB, FUSE, FAT drivers) reject or cannot
+	// represent the times, and that must not fail an otherwise good copy.
+	if preserveTimes {
+		_ = os.Chtimes(tmpName, atime(sourceInfo), sourceInfo.ModTime())
 	}
 
 	success = true

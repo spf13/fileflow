@@ -27,6 +27,7 @@ import (
 	"runtime"
 	"syscall"
 	"testing"
+	"time"
 )
 
 type shortReader struct {
@@ -633,6 +634,70 @@ func TestCopyPreservesMode(t *testing.T) {
 	}
 	if got, want := info.Mode().Perm(), os.FileMode(0600); got != want {
 		t.Errorf("destination mode = %v; want %v", got, want)
+	}
+}
+
+// Fixed whole-second times are representable on every common filesystem.
+var (
+	fixtureMtime = time.Date(2001, 2, 3, 4, 5, 6, 0, time.UTC)
+	fixtureAtime = time.Date(2002, 3, 4, 5, 6, 7, 0, time.UTC)
+)
+
+// writeTimedFixture writes path and sets its times to the fixture times.
+func writeTimedFixture(t *testing.T, path string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte("timed"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(path, fixtureAtime, fixtureMtime); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// assertFixtureTimes checks dst carries the fixture times. Stat before any
+// read of dst so the access time is not bumped.
+func assertFixtureTimes(t *testing.T, dst string) {
+	t.Helper()
+	info, err := os.Stat(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.ModTime(); !got.Equal(fixtureMtime) {
+		t.Errorf("destination mtime = %v; want %v", got, fixtureMtime)
+	}
+	if runtime.GOOS == "linux" {
+		if got := atime(info); !got.Equal(fixtureAtime) {
+			t.Errorf("destination atime = %v; want %v", got, fixtureAtime)
+		}
+	}
+}
+
+func TestCopyPreservesTimes(t *testing.T) {
+	dir := t.TempDir()
+	src, dst := filepath.Join(dir, "source.txt"), filepath.Join(dir, "dest.txt")
+	writeTimedFixture(t, src)
+	if _, err := Copy(src, dst); err != nil {
+		t.Fatalf("Copy() error: %v", err)
+	}
+	assertFixtureTimes(t, dst)
+}
+
+func TestCopyNoPreserveTimes(t *testing.T) {
+	dir := t.TempDir()
+	src, dst := filepath.Join(dir, "source.txt"), filepath.Join(dir, "dest.txt")
+	writeTimedFixture(t, src)
+	// Allow for coarse filesystem timestamp resolution.
+	start := time.Now().Add(-2 * time.Second)
+	f := Flow{NoPreserveTimes: true}
+	if _, err := f.Copy(src, dst); err != nil {
+		t.Fatalf("Copy() error: %v", err)
+	}
+	info, err := os.Stat(dst)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.ModTime(); got.Before(start) {
+		t.Errorf("destination mtime = %v; want copy time (after %v)", got, start)
 	}
 }
 
@@ -1701,4 +1766,3 @@ func TestErrorWrappingAndQuoting(t *testing.T) {
 		}
 	})
 }
-
