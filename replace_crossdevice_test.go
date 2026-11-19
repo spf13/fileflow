@@ -4,6 +4,7 @@ package fileflow
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"io/fs"
 	"os"
@@ -190,4 +191,55 @@ func TestMoveContextCrossFilesystemProgress(t *testing.T) {
 	if _, err := os.Stat(src); !errors.Is(err, fs.ErrNotExist) {
 		t.Errorf("source not removed after move: %v", err)
 	}
+}
+
+func TestMoveResultCrossFilesystemVerify(t *testing.T) {
+	dstDir := t.TempDir()
+	srcDir := replacementCrossDeviceSource(t, dstDir)
+	src, dst := filepath.Join(srcDir, "src"), filepath.Join(dstDir, "dst")
+	data := writeSizedFixture(t, src, copyChunkSize+123)
+	f := Flow{Verify: true}
+	r, err := f.MoveResult(context.Background(), src, dst)
+	if err != nil || r.Path != dst {
+		t.Fatalf("MoveResult = %+v, %v; want path %q", r, err, dst)
+	}
+	if r.Digest != sha256.Sum256(data) {
+		t.Errorf("Digest = %v; want %x", r.Digest, sha256.Sum256(data))
+	}
+	assertContents(t, dst, data)
+	if _, err := os.Stat(src); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("source not removed after verified move: %v", err)
+	}
+}
+
+func TestMoveResultCrossFilesystemVerifyMismatch(t *testing.T) {
+	dstDir := t.TempDir()
+	srcDir := replacementCrossDeviceSource(t, dstDir)
+	src, dst := filepath.Join(srcDir, "src"), filepath.Join(dstDir, "dst")
+	data := writeSizedFixture(t, src, 4096)
+	corruptBeforeVerify(t)
+	f := Flow{Verify: true}
+	r, err := f.MoveResult(context.Background(), src, dst)
+	if !errors.Is(err, ErrDigestMismatch) || r.Path != "" {
+		t.Fatalf("MoveResult = %+v, %v; want empty path, ErrDigestMismatch", r, err)
+	}
+	assertNoCopyOutput(t, dst)
+	assertContents(t, src, data)
+}
+
+func TestReplaceCrossFilesystemVerifyMismatch(t *testing.T) {
+	dstDir := t.TempDir()
+	srcDir := replacementCrossDeviceSource(t, dstDir)
+	src, dst := filepath.Join(srcDir, "stage"), filepath.Join(dstDir, "deck")
+	writeReplacementFixture(t, src, "new deck")
+	writeReplacementFixture(t, dst, "old deck")
+	corruptBeforeVerify(t)
+	f := Flow{Verify: true}
+	final, err := f.Replace(src, dst)
+	if final != "" || !errors.Is(err, ErrDigestMismatch) {
+		t.Fatalf("Replace = %q, %v; want empty path, ErrDigestMismatch", final, err)
+	}
+	assertReplacementContents(t, dst, "old deck")
+	assertReplacementContents(t, src, "new deck")
+	assertReplacementDirectory(t, dstDir, "deck")
 }

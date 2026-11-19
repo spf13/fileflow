@@ -79,6 +79,26 @@ if errors.Is(err, context.DeadlineExceeded) {
 
 Zero-value `Copy` and `Move` (no `Progress`, uncancellable context) keep using `io.Copy`, so kernel fast paths such as Linux `copy_file_range` still apply. A cancellable context or a `Progress` callback switches to the chunked loop.
 
+### Verified copies and digests
+Set `Flow.Verify` (off by default) to verify copies with SHA-256. `Copy`, and `Move`/`Replace` across filesystems, hash the source while copying, sync the temporary file, re-read and hash it, and publish only when the digests match. A mismatch returns an error wrapping `ErrDigestMismatch` (inside `*ErrFailedMovingFile`), removes the temporary file, publishes nothing, and leaves the source intact; a cross-filesystem `Move` never removes its source unless verification passed. Verify routes the copy through the hash, so kernel fast paths such as `copy_file_range` do not apply.
+
+`Flow.CopyResult` and `Flow.MoveResult` return a `Result` with the final `Path` and, when `Verify` is set, the content's `Digest` (a `[32]byte` with a hex `String` method), so callers can journal it without reading the file again. `CopyContext` and `MoveContext` return the same `Path`. Without `Verify` the digest is zero.
+
+- Identical-destination dedup hashes the source during the byte comparison; no extra read.
+- A same-filesystem `MoveResult` is a rename, so it hashes the file once at its final path afterwards. If that read fails, `MoveResult` returns the final `Path` together with the error. As with `*ErrFailedRemovingOriginal`, a non-empty `Path` alongside an error means the file is already at `Path`.
+- `Replace` honours `Verify` across filesystems (a mismatch leaves the old destination and the source intact) and still returns only the path. `Rename` ignores `Verify`.
+
+The re-read may be served from the page cache: verification catches short writes and corruption in the copy path, not media faults below the cache.
+
+```go
+f := fileflow.Flow{Verify: true}
+r, err := f.MoveResult(ctx, "/mnt/card/IMG_0001.CR3", "photos/IMG_0001.CR3")
+if errors.Is(err, fileflow.ErrDigestMismatch) {
+    log.Fatal("copy did not verify; source left in place")
+}
+journal(r.Path, r.Digest.String())
+```
+
 ### Replace
 Use `Replace` when updating a canonical file such as `kennyb.toml`, where a conflict-suffixed filename would leave readers using the old content. This is a move: on success the source is consumed and the returned path is exactly `dst`, including when creating the destination for the first time.
 
@@ -183,10 +203,11 @@ type Flow struct {
     NoCreateDirs      bool
     NoPreserveTimes   bool
     Progress          func(done, total int64)
+    Verify            bool
 }
 ```
 
-The zero value is ready to use. A nil `FindAvailableName` uses `FindAvailableNameInc`, and a zero `DirMode` uses `0755`. `Flow` has `Move`, `MoveContext`, `Rename`, `Copy`, `CopyContext`, and `Replace` methods with the same signatures and behavior as the package-level functions; `Replace` ignores the naming strategy and deliberately overwrites the exact destination.
+The zero value is ready to use. A nil `FindAvailableName` uses `FindAvailableNameInc`, and a zero `DirMode` uses `0755`. `Flow` has `Move`, `MoveContext`, `Rename`, `Copy`, `CopyContext`, and `Replace` methods with the same signatures and behavior as the package-level functions, plus `CopyResult` and `MoveResult` (Flow-only, since `Verify` is off in the zero value); `Replace` ignores the naming strategy and deliberately overwrites the exact destination.
 
 FileFlow creates missing destination directories by default — a deliberate departure from `os.Rename` and OS defaults, which fail when the directory doesn't exist. Set `NoCreateDirs: true` to get standard-library behavior: operations then fail with the underlying `fs.ErrNotExist` instead of creating the directory. This is useful when, for example, the destination is a mount point that must already exist, so files can't be written to an accidentally-created directory on the wrong volume.
 
@@ -216,6 +237,7 @@ The package exposes sentinel errors for `errors.Is`:
 
 * `ErrSameFile`: The source and destination refer to the same underlying file, including through different paths.
 * `ErrMaxAttemptsReached`: The incrementing naming strategy exhausted its 100 attempts.
+* `ErrDigestMismatch`: With `Flow.Verify`, the synced copy did not read back with the source's SHA-256 digest. Nothing was published and the source is intact.
 
 It also exposes structured errors for `errors.As`; both unwrap their underlying cause:
 

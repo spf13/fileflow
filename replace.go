@@ -26,7 +26,8 @@ func Replace(src, dst string) (string, error) {
 }
 
 // Replace moves src to exactly dst with the semantics of [Replace]. It respects
-// DirMode, NoCreateDirs, NoPreserveTimes, and Progress, but does not use
+// DirMode, NoCreateDirs, NoPreserveTimes, Progress, and Verify (across
+// filesystems; a mismatch leaves dst and src intact), but does not use
 // FindAvailableName.
 func (f *Flow) Replace(src, dst string) (string, error) {
 	info, err := os.Lstat(src)
@@ -51,7 +52,7 @@ func (f *Flow) Replace(src, dst string) (string, error) {
 	}
 
 	// Publish only after copying and syncing the full file on the target volume.
-	tmp, err := f.copyToTemp(context.Background(), src, filepath.Dir(dst))
+	tmp, _, err := f.copyToTemp(context.Background(), src, filepath.Dir(dst))
 	if err != nil {
 		return "", &ErrFailedMovingFile{Err: err, Src: src, Dst: dst}
 	}

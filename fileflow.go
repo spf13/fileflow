@@ -28,8 +28,11 @@ package fileflow
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
+	"hash"
 	"io"
 	"io/fs"
 	"os"
@@ -54,7 +57,30 @@ const (
 var (
 	ErrSameFile           = errors.New("source and destination are the same")
 	ErrMaxAttemptsReached = errors.New("maximum increment attempts reached")
+
+	// ErrDigestMismatch reports that a copy made with Flow.Verify did not
+	// read back with the source's digest. Nothing is published and the
+	// source is left intact.
+	ErrDigestMismatch = errors.New("copy verification failed: digest mismatch")
 )
+
+// testHookBeforeVerify, when non-nil, is called with the temporary file's
+// path after it is synced and before it is re-read for verification.
+var testHookBeforeVerify func(tmpName string)
+
+// Digest is a SHA-256 content digest.
+type Digest [sha256.Size]byte
+
+// String returns d as lowercase hex.
+func (d Digest) String() string {
+	return hex.EncodeToString(d[:])
+}
+
+// Result describes a completed Copy or Move.
+type Result struct {
+	Path   string // final destination path (may differ from dst after conflict resolution)
+	Digest Digest // SHA-256 of the content at Path when Flow.Verify is set; zero otherwise
+}
 
 // Flow provides per-instance configuration for file operations.
 // The zero value is ready to use. Configure a Flow before first use;
@@ -99,6 +125,20 @@ type Flow struct {
 	// copied (same-filesystem rename, identical-destination dedup). It runs
 	// on the copy path and must not block for long.
 	Progress func(done, total int64)
+
+	// Verify, when true, makes copies verified: Copy, and Move and Replace
+	// across filesystems, hash the source with SHA-256 while copying, sync
+	// the temporary file, re-read and hash it, and publish only if the
+	// digests match. A mismatch returns an error wrapping ErrDigestMismatch,
+	// removes the temporary file, and leaves the source intact. CopyResult
+	// and MoveResult return the digest. Identical-destination dedup hashes
+	// the source during the byte comparison, and a same-filesystem Move
+	// hashes the file once after the rename. Rename ignores Verify.
+	//
+	// The re-read may be served from the page cache, so verification catches
+	// short writes and corruption in the copy path, not media faults below
+	// the cache. Verify disables the io.Copy kernel fast path.
+	Verify bool
 }
 
 // findAvailableName resolves the configured naming strategy, defaulting to
@@ -266,50 +306,76 @@ func (f *Flow) Move(src, dst string) (string, error) {
 // intact; once the destination is published the move completes, including
 // removal of src.
 func (f *Flow) MoveContext(ctx context.Context, src, dst string) (string, error) {
+	r, err := f.MoveResult(ctx, src, dst)
+	return r.Path, err
+}
+
+// MoveResult is like MoveContext but returns a Result, which carries the
+// moved content's digest when f.Verify is set. A same-filesystem move is a
+// rename, so with Verify the file is hashed once at its final path after the
+// rename; if that read fails, MoveResult returns the final Path together
+// with the error. As with *ErrFailedRemovingOriginal, a non-empty Path
+// alongside an error means the file is already at Path.
+func (f *Flow) MoveResult(ctx context.Context, src, dst string) (Result, error) {
 	if err := ctx.Err(); err != nil {
-		return "", &ErrFailedMovingFile{Err: err, Src: src, Dst: dst}
+		return Result{}, &ErrFailedMovingFile{Err: err, Src: src, Dst: dst}
 	}
 	if err := f.validateRegularFile(src, dst); err != nil {
-		return "", err
+		return Result{}, err
 	}
 	if sameFile(src, dst) {
-		return "", ErrSameFile
+		return Result{}, ErrSameFile
 	}
 
-	final, err := f.rename(ctx, src, dst)
+	r, renamed, err := f.rename(ctx, src, dst, f.Verify)
 	if err != nil {
 		if isCrossDeviceError(err) {
 			// If the file is on a different drive, copy it instead
-			return f.fileMove(ctx, src, dst)
+			return f.moveByCopy(ctx, src, dst)
 		}
-		return "", err
+		return Result{}, err
 	}
-
-	return final, nil
+	if f.Verify && renamed {
+		// The move is committed, so hash regardless of ctx.
+		d, herr := hashFile(context.Background(), r.Path)
+		if herr != nil {
+			return r, fmt.Errorf("hashing moved file %q: %w", r.Path, herr)
+		}
+		r.Digest = d
+	}
+	return r, nil
 }
 
 // resolveDst decides where an operation on src may write. It returns the
 // destination path to use and whether dst already holds content identical
-// to src (in which case no write is needed).
-func (f *Flow) resolveDst(ctx context.Context, src, dst string) (path string, identical bool, err error) {
+// to src (in which case no write is needed). When verify is set and dst is
+// identical, sum is src's digest, computed during the comparison.
+func (f *Flow) resolveDst(ctx context.Context, src, dst string, verify bool) (path string, identical bool, sum Digest, err error) {
 	if sameFile(src, dst) {
-		return "", false, ErrSameFile
+		return "", false, sum, ErrSameFile
 	}
 	if !Exists(dst) {
-		return dst, false, nil
+		return dst, false, sum, nil
 	}
-	same, err := equal(ctx, src, dst)
+	var h hash.Hash
+	if verify {
+		h = sha256.New()
+	}
+	same, err := compare(ctx, src, dst, h)
 	if err != nil {
-		return "", false, fmt.Errorf("checking file identity: %w", err)
+		return "", false, sum, fmt.Errorf("checking file identity: %w", err)
 	}
 	if same {
-		return dst, true, nil
+		if h != nil {
+			h.Sum(sum[:0])
+		}
+		return dst, true, sum, nil
 	}
 	path, err = f.findAvailableName(dst)
 	if err != nil {
-		return "", false, fmt.Errorf("finding available name: %w", err)
+		return "", false, sum, fmt.Errorf("finding available name: %w", err)
 	}
-	return path, false, nil
+	return path, false, sum, nil
 }
 
 // Rename attempts to rename a file from src to dst, handling naming conflicts.
@@ -321,13 +387,17 @@ func Rename(src, dst string) (string, error) {
 
 // publishWithRetry resolves naming conflicts, stages the source if needed, and
 // publishes to the resolved destination with no-replace retry on fs.ErrExist.
+// When verify is set, the Result's digest comes from the identical-destination
+// comparison or from stage.
 func (f *Flow) publishWithRetry(
 	ctx context.Context,
 	src, dst string,
+	verify bool,
 	onIdentical func() error,
-	stage func() (stagedPath string, cleanup func(), err error),
-) (string, error) {
+	stage func() (stagedPath string, sum Digest, cleanup func(), err error),
+) (Result, error) {
 	var staged string
+	var sum Digest
 	var cleanup func()
 	defer func() {
 		if cleanup != nil {
@@ -336,47 +406,48 @@ func (f *Flow) publishWithRetry(
 	}()
 
 	for range maxIncrementAttempts {
-		path, identical, err := f.resolveDst(ctx, src, dst)
+		path, identical, dupSum, err := f.resolveDst(ctx, src, dst, verify)
 		if err != nil {
 			if errors.Is(err, ErrSameFile) {
-				return "", err
+				return Result{}, err
 			}
-			return "", &ErrFailedMovingFile{Err: err, Src: src, Dst: dst}
+			return Result{}, &ErrFailedMovingFile{Err: err, Src: src, Dst: dst}
 		}
 		if identical {
+			r := Result{Path: dst, Digest: dupSum}
 			if err := onIdentical(); err != nil {
-				return dst, err
+				return r, err
 			}
-			return dst, nil
+			return r, nil
 		}
 		if err := f.ensureDir(path); err != nil {
-			return "", &ErrFailedMovingFile{Err: err, Src: src, Dst: path}
+			return Result{}, &ErrFailedMovingFile{Err: err, Src: src, Dst: path}
 		}
 		if staged == "" {
-			staged, cleanup, err = stage()
+			staged, sum, cleanup, err = stage()
 			if err != nil {
-				return "", &ErrFailedMovingFile{Err: err, Src: src, Dst: path}
+				return Result{}, &ErrFailedMovingFile{Err: err, Src: src, Dst: path}
 			}
 		}
 
 		err = renameNoReplace(staged, path, f.AllowOverwriteFallback)
 		if err == nil {
 			_ = syncDir(filepath.Dir(path))
-			return path, nil
+			return Result{Path: path, Digest: sum}, nil
 		}
 		var rmErr *ErrFailedRemovingOriginal
 		if errors.As(err, &rmErr) {
 			// The file landed at path but src could not be removed.
-			return path, err
+			return Result{Path: path, Digest: sum}, err
 		}
 		if errors.Is(err, fs.ErrExist) {
 			// A concurrent writer took the name; resolve again.
 			continue
 		}
-		return "", &ErrFailedMovingFile{Err: err, Src: src, Dst: path}
+		return Result{}, &ErrFailedMovingFile{Err: err, Src: src, Dst: path}
 	}
 
-	return "", &ErrFailedMovingFile{Err: ErrMaxAttemptsReached, Src: src, Dst: dst}
+	return Result{}, &ErrFailedMovingFile{Err: ErrMaxAttemptsReached, Src: src, Dst: dst}
 }
 
 // Rename attempts to rename a file from src to dst, handling naming conflicts.
@@ -384,35 +455,48 @@ func (f *Flow) publishWithRetry(
 // existing file: if a concurrent writer claims the chosen name between
 // conflict resolution and the rename, Rename re-resolves and retries.
 func (f *Flow) Rename(src, dst string) (string, error) {
-	return f.rename(context.Background(), src, dst)
+	r, _, err := f.rename(context.Background(), src, dst, false)
+	return r.Path, err
 }
 
 // rename is Rename, honouring ctx while comparing against an existing
-// destination.
-func (f *Flow) rename(ctx context.Context, src, dst string) (string, error) {
+// destination. renamed reports that src was renamed rather than deduplicated
+// against an identical destination; when verify is set the dedup Result
+// carries src's digest.
+func (f *Flow) rename(ctx context.Context, src, dst string, verify bool) (r Result, renamed bool, err error) {
 	if err := f.validateRegularFile(src, dst); err != nil {
-		return "", err
+		return Result{}, false, err
 	}
-	return f.publishWithRetry(ctx, src, dst, func() error {
+	renamed = true
+	r, err = f.publishWithRetry(ctx, src, dst, verify, func() error {
+		renamed = false
 		if err := os.Remove(src); err != nil {
 			return &ErrFailedRemovingOriginal{Err: err, File: src}
 		}
 		return nil
-	}, func() (string, func(), error) {
-		return src, nil, nil
+	}, func() (string, Digest, func(), error) {
+		return src, Digest{}, nil, nil
 	})
+	return r, renamed, err
 }
 
-// fileMove moves a file across filesystems by copy + remove.
+// fileMove moves a file across filesystems by copy + remove; see moveByCopy.
 func (f *Flow) fileMove(ctx context.Context, src, dst string) (string, error) {
-	final, err := f.CopyContext(ctx, src, dst)
+	r, err := f.moveByCopy(ctx, src, dst)
+	return r.Path, err
+}
+
+// moveByCopy moves a file across filesystems by copy + remove. src is removed
+// only after the copy, verified when f.Verify is set, is published.
+func (f *Flow) moveByCopy(ctx context.Context, src, dst string) (Result, error) {
+	r, err := f.CopyResult(ctx, src, dst)
 	if err != nil {
-		return "", err
+		return Result{}, err
 	}
 	if err := os.Remove(src); err != nil {
-		return final, &ErrFailedRemovingOriginal{Err: err, File: src}
+		return r, &ErrFailedRemovingOriginal{Err: err, File: src}
 	}
-	return final, nil
+	return r, nil
 }
 
 // Exists reports whether an accessible regular file exists at the given path. It returns false for directories and inaccessible paths.
@@ -480,6 +564,12 @@ func Equal(file1, file2 string) (bool, error) {
 
 // equal is Equal but stops reading when ctx is done.
 func equal(ctx context.Context, file1, file2 string) (bool, error) {
+	return compare(ctx, file1, file2, nil)
+}
+
+// compare is equal, additionally writing the bytes read from file1 to h when
+// h is non-nil. When the files are identical, h has seen all of file1.
+func compare(ctx context.Context, file1, file2 string, h hash.Hash) (bool, error) {
 	f1Info, err := os.Stat(file1)
 	if err != nil {
 		return false, fmt.Errorf("stat file1: %w", err)
@@ -506,10 +596,14 @@ func equal(ctx context.Context, file1, file2 string) (bool, error) {
 	}
 	defer f2.Close()
 
-	if ctx.Done() == nil {
-		return readersEqual(f1, f2)
+	var r1, r2 io.Reader = f1, f2
+	if ctx.Done() != nil {
+		r1, r2 = ctxReader{ctx, f1}, ctxReader{ctx, f2}
 	}
-	return readersEqual(ctxReader{ctx, f1}, ctxReader{ctx, f2})
+	if h != nil {
+		r1 = io.TeeReader(r1, h)
+	}
+	return readersEqual(r1, r2)
 }
 
 // ctxReader fails reads with ctx's error once ctx is done.
@@ -584,35 +678,46 @@ func (f *Flow) Copy(src, dst string) (string, error) {
 // in *ErrFailedMovingFile, leaving no destination. Once the destination is
 // published the copy completes.
 func (f *Flow) CopyContext(ctx context.Context, src, dst string) (string, error) {
+	r, err := f.CopyResult(ctx, src, dst)
+	return r.Path, err
+}
+
+// CopyResult is like CopyContext but returns a Result, which carries the
+// copied content's digest when f.Verify is set.
+func (f *Flow) CopyResult(ctx context.Context, src, dst string) (Result, error) {
 	if err := ctx.Err(); err != nil {
-		return "", &ErrFailedMovingFile{Err: err, Src: src, Dst: dst}
+		return Result{}, &ErrFailedMovingFile{Err: err, Src: src, Dst: dst}
 	}
 	if err := f.validateRegularFile(src, dst); err != nil {
-		return "", err
+		return Result{}, err
 	}
-	return f.publishWithRetry(ctx, src, dst, func() error {
+	return f.publishWithRetry(ctx, src, dst, f.Verify, func() error {
 		return nil
-	}, func() (string, func(), error) {
-		tmpName, err := f.copyToTemp(ctx, src, filepath.Dir(dst))
+	}, func() (string, Digest, func(), error) {
+		tmpName, sum, err := f.copyToTemp(ctx, src, filepath.Dir(dst))
 		if err != nil {
-			return "", nil, err
+			return "", sum, nil, err
 		}
 		if err := ctx.Err(); err != nil {
 			os.Remove(tmpName)
-			return "", nil, err
+			return "", sum, nil, err
 		}
-		return tmpName, func() { os.Remove(tmpName) }, nil
+		return tmpName, sum, func() { os.Remove(tmpName) }, nil
 	})
 }
 
 // copyToTemp copies src to a new temporary file in dir, preserving src's
 // permission mode and, unless f.NoPreserveTimes is set, its modification and
 // access times (best-effort). It reports progress to f.Progress and stops
-// between chunks when ctx is done. It returns the temporary file's path.
-func (f *Flow) copyToTemp(ctx context.Context, src, dir string) (string, error) {
+// between chunks when ctx is done. When f.Verify is set it hashes src while
+// copying, re-reads the synced temporary file, and fails with
+// ErrDigestMismatch if the digests differ. It returns the temporary file's
+// path and, with Verify, its digest.
+func (f *Flow) copyToTemp(ctx context.Context, src, dir string) (string, Digest, error) {
+	var sum Digest
 	sourceFile, err := os.Open(src)
 	if err != nil {
-		return "", fmt.Errorf("opening source file: %w", err)
+		return "", sum, fmt.Errorf("opening source file: %w", err)
 	}
 	defer sourceFile.Close()
 
@@ -620,12 +725,12 @@ func (f *Flow) copyToTemp(ctx context.Context, src, dir string) (string, error) 
 	// pre-copy value, not one bumped by reading the file.
 	sourceInfo, err := sourceFile.Stat()
 	if err != nil {
-		return "", fmt.Errorf("getting source file info: %w", err)
+		return "", sum, fmt.Errorf("getting source file info: %w", err)
 	}
 
 	tmp, err := os.CreateTemp(dir, ".fileflow-*")
 	if err != nil {
-		return "", fmt.Errorf("creating temporary destination file: %w", err)
+		return "", sum, fmt.Errorf("creating temporary destination file: %w", err)
 	}
 	tmpName := tmp.Name()
 	success := false
@@ -636,20 +741,40 @@ func (f *Flow) copyToTemp(ctx context.Context, src, dir string) (string, error) 
 		}
 	}()
 
-	if _, err := copyData(ctx, tmp, sourceFile, sourceInfo.Size(), f.Progress); err != nil {
-		return "", fmt.Errorf("copying file content: %w", err)
+	var r io.Reader = sourceFile
+	var h hash.Hash
+	if f.Verify {
+		h = sha256.New()
+		r = io.TeeReader(sourceFile, h)
+	}
+	if _, err := copyData(ctx, tmp, r, sourceInfo.Size(), f.Progress); err != nil {
+		return "", sum, fmt.Errorf("copying file content: %w", err)
 	}
 
 	if err := tmp.Sync(); err != nil {
-		return "", fmt.Errorf("syncing file: %w", err)
+		return "", sum, fmt.Errorf("syncing file: %w", err)
+	}
+
+	if h != nil {
+		h.Sum(sum[:0])
+		if testHookBeforeVerify != nil {
+			testHookBeforeVerify(tmpName)
+		}
+		got, err := hashFile(ctx, tmpName)
+		if err != nil {
+			return "", sum, fmt.Errorf("verifying copy: %w", err)
+		}
+		if got != sum {
+			return "", sum, ErrDigestMismatch
+		}
 	}
 
 	if err := os.Chmod(tmpName, sourceInfo.Mode()); err != nil {
-		return "", fmt.Errorf("setting destination file mode: %w", err)
+		return "", sum, fmt.Errorf("setting destination file mode: %w", err)
 	}
 
 	if err := tmp.Close(); err != nil {
-		return "", fmt.Errorf("closing temporary destination file: %w", err)
+		return "", sum, fmt.Errorf("closing temporary destination file: %w", err)
 	}
 
 	// Set times after Close, which can update mtime on some platforms.
@@ -660,7 +785,7 @@ func (f *Flow) copyToTemp(ctx context.Context, src, dir string) (string, error) 
 	}
 
 	success = true
-	return tmpName, nil
+	return tmpName, sum, nil
 }
 
 // copyData copies src to dst and returns the number of bytes copied. When ctx
@@ -699,4 +824,25 @@ func copyData(ctx context.Context, dst io.Writer, src io.Reader, total int64, pr
 			return done, rerr
 		}
 	}
+}
+
+// hashFile returns the SHA-256 digest of the file at path, stopping between
+// reads when ctx is done.
+func hashFile(ctx context.Context, path string) (Digest, error) {
+	var sum Digest
+	file, err := os.Open(path)
+	if err != nil {
+		return sum, err
+	}
+	defer file.Close()
+	var r io.Reader = file
+	if ctx.Done() != nil {
+		r = ctxReader{ctx, file}
+	}
+	h := sha256.New()
+	if _, err := io.Copy(h, r); err != nil {
+		return sum, err
+	}
+	h.Sum(sum[:0])
+	return sum, nil
 }
