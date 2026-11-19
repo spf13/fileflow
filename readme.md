@@ -93,8 +93,10 @@ The re-read may be served from the page cache: verification catches short writes
 ```go
 f := fileflow.Flow{Verify: true}
 r, err := f.MoveResult(ctx, "/mnt/card/IMG_0001.CR3", "photos/IMG_0001.CR3")
-if errors.Is(err, fileflow.ErrDigestMismatch) {
-    log.Fatal("copy did not verify; source left in place")
+if err != nil {
+    // errors.Is(err, fileflow.ErrDigestMismatch): nothing published, source left in place.
+    // A non-empty r.Path alongside an error means the file already moved there.
+    log.Fatal(err)
 }
 journal(r.Path, r.Digest.String())
 ```
