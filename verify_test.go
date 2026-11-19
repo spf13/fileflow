@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -156,4 +157,53 @@ func TestVerifyConflictPath(t *testing.T) {
 		t.Errorf("Digest = %v; want %x", r.Digest, sha256.Sum256(data))
 	}
 	assertContents(t, want, data)
+}
+
+func TestCopyResultVerifyCancelDuringReread(t *testing.T) {
+	srcDir, dstDir := t.TempDir(), t.TempDir()
+	src, dst := filepath.Join(srcDir, "src"), filepath.Join(dstDir, "dst")
+	data := writeSizedFixture(t, src, 4096)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	testHookBeforeVerify = func(string) { cancel() }
+	t.Cleanup(func() { testHookBeforeVerify = nil })
+
+	f := Flow{Verify: true}
+	r, err := f.CopyResult(ctx, src, dst)
+	if r.Path != "" || !errors.Is(err, context.Canceled) {
+		t.Fatalf("CopyResult = %+v, %v; want empty path, context.Canceled", r, err)
+	}
+	var moveErr *ErrFailedMovingFile
+	if !errors.As(err, &moveErr) {
+		t.Errorf("error %v is not *ErrFailedMovingFile", err)
+	}
+	assertNoCopyOutput(t, dst)
+	assertContents(t, src, data)
+}
+
+func TestMoveResultSameFSHashFailureReturnsPath(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs Unix permissions enforced for an unprivileged user")
+	}
+	dir := t.TempDir()
+	src, dst := filepath.Join(dir, "src"), filepath.Join(dir, "dst")
+	writeSizedFixture(t, src, 1024)
+	// The rename succeeds, but the moved file cannot be opened for hashing.
+	if err := os.Chmod(src, 0); err != nil {
+		t.Fatal(err)
+	}
+	f := Flow{Verify: true}
+	r, err := f.MoveResult(context.Background(), src, dst)
+	if r.Path != dst || !errors.Is(err, fs.ErrPermission) {
+		t.Fatalf("MoveResult = %+v, %v; want path %q with permission error", r, err, dst)
+	}
+	if r.Digest != (Digest{}) {
+		t.Errorf("Digest = %v; want zero on hash failure", r.Digest)
+	}
+	if _, err := os.Lstat(dst); err != nil {
+		t.Errorf("moved file missing at %q: %v", dst, err)
+	}
+	if _, err := os.Lstat(src); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("source still present: %v", err)
+	}
 }
