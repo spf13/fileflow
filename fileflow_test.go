@@ -1920,3 +1920,18 @@ func (r *eofReader) Read(p []byte) (int, error) {
 	}
 	return n, nil
 }
+
+func TestEqualHonoursContext(t *testing.T) {
+	dir := t.TempDir()
+	a, b := filepath.Join(dir, "a"), filepath.Join(dir, "b")
+	writeSizedFixture(t, a, 64*1024)
+	writeSizedFixture(t, b, 64*1024)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if same, err := equal(ctx, a, b); same || !errors.Is(err, context.Canceled) {
+		t.Fatalf("equal(cancelled) = %v, %v; want false, context.Canceled", same, err)
+	}
+	if same, err := equal(context.Background(), a, b); !same || err != nil {
+		t.Fatalf("equal = %v, %v; want true, nil", same, err)
+	}
+}

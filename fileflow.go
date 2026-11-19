@@ -290,14 +290,14 @@ func (f *Flow) MoveContext(ctx context.Context, src, dst string) (string, error)
 // resolveDst decides where an operation on src may write. It returns the
 // destination path to use and whether dst already holds content identical
 // to src (in which case no write is needed).
-func (f *Flow) resolveDst(src, dst string) (path string, identical bool, err error) {
+func (f *Flow) resolveDst(ctx context.Context, src, dst string) (path string, identical bool, err error) {
 	if sameFile(src, dst) {
 		return "", false, ErrSameFile
 	}
 	if !Exists(dst) {
 		return dst, false, nil
 	}
-	same, err := Equal(src, dst)
+	same, err := equal(ctx, src, dst)
 	if err != nil {
 		return "", false, fmt.Errorf("checking file identity: %w", err)
 	}
@@ -321,6 +321,7 @@ func Rename(src, dst string) (string, error) {
 // publishWithRetry resolves naming conflicts, stages the source if needed, and
 // publishes to the resolved destination with no-replace retry on fs.ErrExist.
 func (f *Flow) publishWithRetry(
+	ctx context.Context,
 	src, dst string,
 	onIdentical func() error,
 	stage func() (stagedPath string, cleanup func(), err error),
@@ -334,7 +335,7 @@ func (f *Flow) publishWithRetry(
 	}()
 
 	for range maxIncrementAttempts {
-		path, identical, err := f.resolveDst(src, dst)
+		path, identical, err := f.resolveDst(ctx, src, dst)
 		if err != nil {
 			if errors.Is(err, ErrSameFile) {
 				return "", err
@@ -385,7 +386,7 @@ func (f *Flow) Rename(src, dst string) (string, error) {
 	if err := f.validateRegularFile(src, dst); err != nil {
 		return "", err
 	}
-	return f.publishWithRetry(src, dst, func() error {
+	return f.publishWithRetry(context.Background(), src, dst, func() error {
 		if err := os.Remove(src); err != nil {
 			return &ErrFailedRemovingOriginal{Err: err, File: src}
 		}
@@ -467,6 +468,11 @@ func FindAvailableNameTS(baseName string) (string, error) {
 
 // Equal reports whether two files have identical content by comparing them byte for byte.
 func Equal(file1, file2 string) (bool, error) {
+	return equal(context.Background(), file1, file2)
+}
+
+// equal is Equal but stops reading when ctx is done.
+func equal(ctx context.Context, file1, file2 string) (bool, error) {
 	f1Info, err := os.Stat(file1)
 	if err != nil {
 		return false, fmt.Errorf("stat file1: %w", err)
@@ -493,7 +499,23 @@ func Equal(file1, file2 string) (bool, error) {
 	}
 	defer f2.Close()
 
-	return readersEqual(f1, f2)
+	if ctx.Done() == nil {
+		return readersEqual(f1, f2)
+	}
+	return readersEqual(ctxReader{ctx, f1}, ctxReader{ctx, f2})
+}
+
+// ctxReader fails reads with ctx's error once ctx is done.
+type ctxReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (r ctxReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.r.Read(p)
 }
 
 func readersEqual(r1, r2 io.Reader) (bool, error) {
@@ -549,6 +571,7 @@ func (f *Flow) Copy(src, dst string) (string, error) {
 }
 
 // CopyContext is like Copy but honours ctx. It checks ctx before starting,
+// while comparing against an existing destination,
 // between 1 MiB chunks of the copy, and once more before publishing; on
 // cancellation it removes the temporary file and returns ctx's error wrapped
 // in *ErrFailedMovingFile, leaving no destination. Once the destination is
@@ -560,7 +583,7 @@ func (f *Flow) CopyContext(ctx context.Context, src, dst string) (string, error)
 	if err := f.validateRegularFile(src, dst); err != nil {
 		return "", err
 	}
-	return f.publishWithRetry(src, dst, func() error {
+	return f.publishWithRetry(ctx, src, dst, func() error {
 		return nil
 	}, func() (string, func(), error) {
 		tmpName, err := f.copyToTemp(ctx, src, filepath.Dir(dst))
