@@ -1,6 +1,7 @@
 package fileflow
 
 import (
+	"context"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -25,7 +26,8 @@ func Replace(src, dst string) (string, error) {
 }
 
 // Replace moves src to exactly dst with the semantics of [Replace]. It respects
-// DirMode and NoCreateDirs, but does not use FindAvailableName.
+// DirMode, NoCreateDirs, NoPreserveTimes, and Progress, but does not use
+// FindAvailableName.
 func (f *Flow) Replace(src, dst string) (string, error) {
 	info, err := os.Lstat(src)
 	if err != nil {
@@ -49,7 +51,7 @@ func (f *Flow) Replace(src, dst string) (string, error) {
 	}
 
 	// Publish only after copying and syncing the full file on the target volume.
-	tmp, err := copyToTemp(src, filepath.Dir(dst), !f.NoPreserveTimes)
+	tmp, err := f.copyToTemp(context.Background(), src, filepath.Dir(dst))
 	if err != nil {
 		return "", &ErrFailedMovingFile{Err: err, Src: src, Dst: dst}
 	}

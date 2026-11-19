@@ -60,6 +60,25 @@ if err != nil {
 fmt.Println("File copied to:", finalPath)
 ```
 
+### Cancellation and progress
+`CopyContext` and `MoveContext` (package-level and on `Flow`) take a `context.Context`. A context that is already done returns its error before anything is touched. During a copy the context is checked between 1 MiB chunks and once more before publishing; on cancellation the temporary file is removed, no destination is created, and the source is left intact. The error wraps `ctx.Err()` in `*ErrFailedMovingFile`, so `errors.Is(err, context.Canceled)` works. A same-filesystem `MoveContext` is a single rename and is only checked at entry. Once the destination is published the operation completes; a cross-filesystem move still removes the source.
+
+Set `Flow.Progress` to observe copies. It is called synchronously from the copying goroutine after each chunk is written, with `total` taken from the source's pre-copy stat; the last call has `done` equal to the bytes copied. It is not called when nothing is copied (same-filesystem rename, identical-destination dedup), and must not block for long. `Replace` also honours `Progress` across filesystems.
+
+```go
+ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+defer cancel()
+f := fileflow.Flow{Progress: func(done, total int64) {
+    fmt.Printf("\r%d/%d bytes", done, total)
+}}
+finalPath, err := f.MoveContext(ctx, "/mnt/usb/video.mkv", "videos/video.mkv")
+if errors.Is(err, context.DeadlineExceeded) {
+    log.Fatal("move timed out; source left in place")
+}
+```
+
+Zero-value `Copy` and `Move` (no `Progress`, uncancellable context) keep using `io.Copy`, so kernel fast paths such as Linux `copy_file_range` still apply. A cancellable context or a `Progress` callback switches to the chunked loop.
+
 ### Replace
 Use `Replace` when updating a canonical file such as `kennyb.toml`, where a conflict-suffixed filename would leave readers using the old content. This is a move: on success the source is consumed and the returned path is exactly `dst`, including when creating the destination for the first time.
 
@@ -163,10 +182,11 @@ type Flow struct {
     DirMode           fs.FileMode
     NoCreateDirs      bool
     NoPreserveTimes   bool
+    Progress          func(done, total int64)
 }
 ```
 
-The zero value is ready to use. A nil `FindAvailableName` uses `FindAvailableNameInc`, and a zero `DirMode` uses `0755`. `Flow` has `Move`, `Rename`, `Copy`, and `Replace` methods with the same signatures and behavior as the package-level functions; `Replace` ignores the naming strategy and deliberately overwrites the exact destination.
+The zero value is ready to use. A nil `FindAvailableName` uses `FindAvailableNameInc`, and a zero `DirMode` uses `0755`. `Flow` has `Move`, `MoveContext`, `Rename`, `Copy`, `CopyContext`, and `Replace` methods with the same signatures and behavior as the package-level functions; `Replace` ignores the naming strategy and deliberately overwrites the exact destination.
 
 FileFlow creates missing destination directories by default — a deliberate departure from `os.Rename` and OS defaults, which fail when the directory doesn't exist. Set `NoCreateDirs: true` to get standard-library behavior: operations then fail with the underlying `fs.ErrNotExist` instead of creating the directory. This is useful when, for example, the destination is a mount point that must already exist, so files can't be written to an accidentally-created directory on the wrong volume.
 
@@ -187,7 +207,7 @@ if err != nil {
 fmt.Println("File moved to:", finalPath)
 ```
 
-The package-level `Move`, `Rename`, `Copy`, and `Replace` functions remain available for simple usage and use the zero-value defaults. Per-instance `Flow` configuration replaces the mutable package globals from earlier versions; this is a breaking change.
+The package-level `Move`, `MoveContext`, `Rename`, `Copy`, `CopyContext`, and `Replace` functions remain available for simple usage and use the zero-value defaults. Per-instance `Flow` configuration replaces the mutable package globals from earlier versions; this is a breaking change.
 
 The maximum number of incrementing candidates is an internal constant of 100 and is not configurable.
 

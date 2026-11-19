@@ -27,6 +27,7 @@ package fileflow
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -40,6 +41,10 @@ import (
 const (
 	// DefaultDirMode is the default permission mode for new directories.
 	DefaultDirMode = 0755
+
+	// copyChunkSize is the buffer size of the cancellable, progress-reporting
+	// copy loop, and so the granularity of cancellation and Progress calls.
+	copyChunkSize = 1 << 20
 
 	// maxIncrementAttempts is the maximum number of candidate names tried
 	// when resolving a naming conflict by incrementing a counter.
@@ -86,6 +91,14 @@ type Flow struct {
 	// filesystem (FAT: 2 s mtime, date-only atime; exFAT: 10 ms).
 	// Same-filesystem renames always keep times because no copy happens.
 	NoPreserveTimes bool
+
+	// Progress, when non-nil, is called synchronously from the copying
+	// goroutine after each chunk (up to 1 MiB) is written to the temporary
+	// file. total is the source size from the pre-copy stat; the last call
+	// has done equal to the bytes copied. It is not called when no bytes are
+	// copied (same-filesystem rename, identical-destination dedup). It runs
+	// on the copy path and must not block for long.
+	Progress func(done, total int64)
 }
 
 // findAvailableName resolves the configured naming strategy, defaulting to
@@ -233,9 +246,28 @@ func Move(src, dst string) (string, error) {
 	return f.Move(src, dst)
 }
 
+// MoveContext is like [Move] but honours ctx; see [Flow.MoveContext].
+func MoveContext(ctx context.Context, src, dst string) (string, error) {
+	var f Flow
+	return f.MoveContext(ctx, src, dst)
+}
+
 // Move tries to move a file atomically using rename if possible,
 // falling back to copy+delete if files are on different filesystems.
 func (f *Flow) Move(src, dst string) (string, error) {
+	return f.MoveContext(context.Background(), src, dst)
+}
+
+// MoveContext is like Move but honours ctx. It returns ctx's error, wrapped
+// in *ErrFailedMovingFile, if ctx is done before the move starts. A
+// same-filesystem rename is not interrupted. Across filesystems the copy is
+// cancelled between chunks and its temporary file removed, leaving src
+// intact; once the destination is published the move completes, including
+// removal of src.
+func (f *Flow) MoveContext(ctx context.Context, src, dst string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", &ErrFailedMovingFile{Err: err, Src: src, Dst: dst}
+	}
 	if err := f.validateRegularFile(src, dst); err != nil {
 		return "", err
 	}
@@ -247,7 +279,7 @@ func (f *Flow) Move(src, dst string) (string, error) {
 	if err != nil {
 		if isCrossDeviceError(err) {
 			// If the file is on a different drive, copy it instead
-			return f.fileMove(src, dst)
+			return f.fileMove(ctx, src, dst)
 		}
 		return "", err
 	}
@@ -364,8 +396,8 @@ func (f *Flow) Rename(src, dst string) (string, error) {
 }
 
 // fileMove moves a file across filesystems by copy + remove.
-func (f *Flow) fileMove(src, dst string) (string, error) {
-	final, err := f.Copy(src, dst)
+func (f *Flow) fileMove(ctx context.Context, src, dst string) (string, error) {
+	final, err := f.CopyContext(ctx, src, dst)
 	if err != nil {
 		return "", err
 	}
@@ -497,6 +529,12 @@ func Copy(src, dst string) (string, error) {
 	return f.Copy(src, dst)
 }
 
+// CopyContext is like [Copy] but honours ctx; see [Flow.CopyContext].
+func CopyContext(ctx context.Context, src, dst string) (string, error) {
+	var f Flow
+	return f.CopyContext(ctx, src, dst)
+}
+
 // Copy performs an efficient copy of a file from src to dst.
 // It creates missing destination directories by default, using DirMode;
 // set Flow.NoCreateDirs to require an existing directory instead.
@@ -507,14 +545,30 @@ func Copy(src, dst string) (string, error) {
 // The final rename never replaces an existing file: if a concurrent writer
 // claims the chosen name, Copy re-resolves and retries.
 func (f *Flow) Copy(src, dst string) (string, error) {
+	return f.CopyContext(context.Background(), src, dst)
+}
+
+// CopyContext is like Copy but honours ctx. It checks ctx before starting,
+// between 1 MiB chunks of the copy, and once more before publishing; on
+// cancellation it removes the temporary file and returns ctx's error wrapped
+// in *ErrFailedMovingFile, leaving no destination. Once the destination is
+// published the copy completes.
+func (f *Flow) CopyContext(ctx context.Context, src, dst string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", &ErrFailedMovingFile{Err: err, Src: src, Dst: dst}
+	}
 	if err := f.validateRegularFile(src, dst); err != nil {
 		return "", err
 	}
 	return f.publishWithRetry(src, dst, func() error {
 		return nil
 	}, func() (string, func(), error) {
-		tmpName, err := copyToTemp(src, filepath.Dir(dst), !f.NoPreserveTimes)
+		tmpName, err := f.copyToTemp(ctx, src, filepath.Dir(dst))
 		if err != nil {
+			return "", nil, err
+		}
+		if err := ctx.Err(); err != nil {
+			os.Remove(tmpName)
 			return "", nil, err
 		}
 		return tmpName, func() { os.Remove(tmpName) }, nil
@@ -522,9 +576,10 @@ func (f *Flow) Copy(src, dst string) (string, error) {
 }
 
 // copyToTemp copies src to a new temporary file in dir, preserving src's
-// permission mode and, when preserveTimes is set, its modification and access
-// times (best-effort). It returns the temporary file's path.
-func copyToTemp(src, dir string, preserveTimes bool) (string, error) {
+// permission mode and, unless f.NoPreserveTimes is set, its modification and
+// access times (best-effort). It reports progress to f.Progress and stops
+// between chunks when ctx is done. It returns the temporary file's path.
+func (f *Flow) copyToTemp(ctx context.Context, src, dir string) (string, error) {
 	sourceFile, err := os.Open(src)
 	if err != nil {
 		return "", fmt.Errorf("opening source file: %w", err)
@@ -551,7 +606,7 @@ func copyToTemp(src, dir string, preserveTimes bool) (string, error) {
 		}
 	}()
 
-	if _, err := io.Copy(tmp, sourceFile); err != nil {
+	if _, err := copyData(ctx, tmp, sourceFile, sourceInfo.Size(), f.Progress); err != nil {
 		return "", fmt.Errorf("copying file content: %w", err)
 	}
 
@@ -570,10 +625,48 @@ func copyToTemp(src, dir string, preserveTimes bool) (string, error) {
 	// Set times after Close, which can update mtime on some platforms.
 	// Best-effort: some filesystems (SMB, FUSE, FAT drivers) reject or cannot
 	// represent the times, and that must not fail an otherwise good copy.
-	if preserveTimes {
+	if !f.NoPreserveTimes {
 		_ = os.Chtimes(tmpName, atime(sourceInfo), sourceInfo.ModTime())
 	}
 
 	success = true
 	return tmpName, nil
+}
+
+// copyData copies src to dst and returns the number of bytes copied. When ctx
+// can never be cancelled and progress is nil it uses io.Copy, keeping kernel
+// fast paths such as copy_file_range. Otherwise it copies in chunks of
+// copyChunkSize, checking ctx before each read and calling progress after
+// each write.
+func copyData(ctx context.Context, dst io.Writer, src io.Reader, total int64, progress func(done, total int64)) (int64, error) {
+	if ctx.Done() == nil && progress == nil {
+		return io.Copy(dst, src)
+	}
+	buf := make([]byte, copyChunkSize)
+	var done int64
+	for {
+		if err := ctx.Err(); err != nil {
+			return done, err
+		}
+		n, rerr := src.Read(buf)
+		if n > 0 {
+			w, werr := dst.Write(buf[:n])
+			done += int64(w)
+			if werr != nil {
+				return done, werr
+			}
+			if w != n {
+				return done, io.ErrShortWrite
+			}
+			if progress != nil {
+				progress(done, total)
+			}
+		}
+		if rerr == io.EOF {
+			return done, nil
+		}
+		if rerr != nil {
+			return done, rerr
+		}
+	}
 }

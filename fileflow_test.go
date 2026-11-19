@@ -17,6 +17,7 @@ package fileflow
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -223,7 +224,7 @@ func TestFileMove(t *testing.T) {
 	}
 
 	var f Flow
-	final, err := f.fileMove(src, dst)
+	final, err := f.fileMove(context.Background(), src, dst)
 	if err != nil {
 		t.Fatalf("fileMove() error: %v", err)
 	}
@@ -260,7 +261,7 @@ func TestFileMoveIdenticalRemovesSrc(t *testing.T) {
 	}
 
 	var f Flow
-	final, err := f.fileMove(src, dst)
+	final, err := f.fileMove(context.Background(), src, dst)
 	if err != nil {
 		t.Fatalf("fileMove() error: %v", err)
 	}
@@ -301,7 +302,7 @@ func TestFileMoveConflict(t *testing.T) {
 	}
 
 	var f Flow
-	final, err := f.fileMove(src, dst)
+	final, err := f.fileMove(context.Background(), src, dst)
 	if err != nil {
 		t.Fatalf("fileMove() error: %v", err)
 	}
@@ -1765,4 +1766,157 @@ func TestErrorWrappingAndQuoting(t *testing.T) {
 			}
 		}
 	})
+}
+
+// writeSizedFixture writes size bytes of patterned content to path.
+func writeSizedFixture(t *testing.T, path string, size int) []byte {
+	t.Helper()
+	data := make([]byte, size)
+	for i := range data {
+		data[i] = byte(i % 251)
+	}
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+// assertNoCopyOutput fails if dst or any fileflow temp file exists in its dir.
+func assertNoCopyOutput(t *testing.T, dst string) {
+	t.Helper()
+	if _, err := os.Lstat(dst); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("destination %q exists after cancel: %v", dst, err)
+	}
+	temps, err := filepath.Glob(filepath.Join(filepath.Dir(dst), ".fileflow-*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(temps) != 0 {
+		t.Errorf("temporary files left after cancel: %v", temps)
+	}
+}
+
+func assertContents(t *testing.T, path string, want []byte) {
+	t.Helper()
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading %q: %v", path, err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Errorf("%q content differs (len %d, want %d)", path, len(got), len(want))
+	}
+}
+
+func TestContextAlreadyCancelled(t *testing.T) {
+	ops := map[string]func(context.Context, string, string) (string, error){
+		"CopyContext": CopyContext,
+		"MoveContext": MoveContext,
+	}
+	for name, op := range ops {
+		t.Run(name, func(t *testing.T) {
+			srcDir, dstDir := t.TempDir(), t.TempDir()
+			src, dst := filepath.Join(srcDir, "src"), filepath.Join(dstDir, "dst")
+			data := writeSizedFixture(t, src, 1024)
+			ctx, cancel := context.WithCancel(context.Background())
+			cancel()
+			final, err := op(ctx, src, dst)
+			if final != "" || !errors.Is(err, context.Canceled) {
+				t.Fatalf("%s = %q, %v; want \"\", context.Canceled", name, final, err)
+			}
+			var moveErr *ErrFailedMovingFile
+			if !errors.As(err, &moveErr) {
+				t.Errorf("error %v is not *ErrFailedMovingFile", err)
+			}
+			assertNoCopyOutput(t, dst)
+			assertContents(t, src, data)
+		})
+	}
+}
+
+func TestCopyContextCancelMidCopy(t *testing.T) {
+	srcDir, dstDir := t.TempDir(), t.TempDir()
+	src, dst := filepath.Join(srcDir, "src"), filepath.Join(dstDir, "dst")
+	data := writeSizedFixture(t, src, 3*copyChunkSize+copyChunkSize/2)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	calls := 0
+	f := Flow{Progress: func(done, total int64) {
+		calls++
+		cancel()
+	}}
+	final, err := f.CopyContext(ctx, src, dst)
+	if final != "" || !errors.Is(err, context.Canceled) {
+		t.Fatalf("CopyContext = %q, %v; want \"\", context.Canceled", final, err)
+	}
+	if calls != 1 {
+		t.Errorf("Progress called %d times; want 1", calls)
+	}
+	assertNoCopyOutput(t, dst)
+	assertContents(t, src, data)
+}
+
+func TestCopyProgress(t *testing.T) {
+	srcDir, dstDir := t.TempDir(), t.TempDir()
+	src, dst := filepath.Join(srcDir, "src"), filepath.Join(dstDir, "dst")
+	size := int64(3*copyChunkSize + copyChunkSize/2)
+	data := writeSizedFixture(t, src, int(size))
+	var dones []int64
+	f := Flow{Progress: func(done, total int64) {
+		if total != size {
+			t.Errorf("Progress total = %d; want %d", total, size)
+		}
+		dones = append(dones, done)
+	}}
+	final, err := f.Copy(src, dst)
+	if err != nil || final != dst {
+		t.Fatalf("Copy = %q, %v; want %q, nil", final, err, dst)
+	}
+	assertContents(t, dst, data)
+	if len(dones) < 2 {
+		t.Fatalf("Progress called %d times; want >= 2", len(dones))
+	}
+	for i := 1; i < len(dones); i++ {
+		if dones[i] < dones[i-1] {
+			t.Errorf("Progress not monotonic: %v", dones)
+		}
+	}
+	if last := dones[len(dones)-1]; last != size {
+		t.Errorf("final Progress done = %d; want %d", last, size)
+	}
+
+	// An identical destination is deduplicated, so nothing is copied.
+	dones = nil
+	if final, err := f.Copy(src, dst); err != nil || final != dst {
+		t.Fatalf("identical Copy = %q, %v; want %q, nil", final, err, dst)
+	}
+	if len(dones) != 0 {
+		t.Errorf("Progress called %d times for identical destination; want 0", len(dones))
+	}
+}
+
+func TestCopyDataShortReadsWithEOF(t *testing.T) {
+	// A reader returning short reads and n > 0 together with io.EOF.
+	data := bytes.Repeat([]byte("abc"), 1000)
+	var got bytes.Buffer
+	var last int64
+	n, err := copyData(context.Background(), &got, &eofReader{data: data, max: 700}, int64(len(data)),
+		func(done, _ int64) { last = done })
+	if err != nil || n != int64(len(data)) || !bytes.Equal(got.Bytes(), data) || last != n {
+		t.Fatalf("copyData = %d, %v (last progress %d); want %d, nil", n, err, last, len(data))
+	}
+}
+
+// eofReader returns at most max bytes per Read and io.EOF with the final bytes.
+type eofReader struct {
+	data []byte
+	max  int
+}
+
+func (r *eofReader) Read(p []byte) (int, error) {
+	n := copy(p[:min(len(p), r.max)], r.data)
+	r.data = r.data[n:]
+	if len(r.data) == 0 {
+		return n, io.EOF
+	}
+	return n, nil
 }

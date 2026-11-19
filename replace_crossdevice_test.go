@@ -3,6 +3,7 @@
 package fileflow
 
 import (
+	"context"
 	"errors"
 	"io/fs"
 	"os"
@@ -144,5 +145,49 @@ func assertReplacementDirectory(t *testing.T, dir, want string) {
 	}
 	if len(entries) != 1 || entries[0].Name() != want {
 		t.Fatalf("unexpected destination files after replacement: %v", entries)
+	}
+}
+
+func TestMoveContextCrossFilesystemCancel(t *testing.T) {
+	dstDir := t.TempDir()
+	srcDir := replacementCrossDeviceSource(t, dstDir)
+	src, dst := filepath.Join(srcDir, "src"), filepath.Join(dstDir, "dst")
+	data := writeSizedFixture(t, src, 3*copyChunkSize+copyChunkSize/2)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	f := Flow{Progress: func(done, total int64) { cancel() }}
+	final, err := f.MoveContext(ctx, src, dst)
+	if final != "" || !errors.Is(err, context.Canceled) {
+		t.Fatalf("MoveContext = %q, %v; want \"\", context.Canceled", final, err)
+	}
+	assertNoCopyOutput(t, dst)
+	assertContents(t, src, data)
+}
+
+func TestMoveContextCrossFilesystemProgress(t *testing.T) {
+	dstDir := t.TempDir()
+	srcDir := replacementCrossDeviceSource(t, dstDir)
+	src, dst := filepath.Join(srcDir, "src"), filepath.Join(dstDir, "dst")
+	size := int64(2*copyChunkSize + 17)
+	data := writeSizedFixture(t, src, int(size))
+	var calls int
+	var last int64
+	f := Flow{Progress: func(done, total int64) {
+		calls++
+		last = done
+		if total != size {
+			t.Errorf("Progress total = %d; want %d", total, size)
+		}
+	}}
+	final, err := f.MoveContext(context.Background(), src, dst)
+	if err != nil || final != dst {
+		t.Fatalf("MoveContext = %q, %v; want %q, nil", final, err, dst)
+	}
+	if calls < 2 || last != size {
+		t.Errorf("Progress calls = %d, last done = %d; want >= 2 calls ending at %d", calls, last, size)
+	}
+	assertContents(t, dst, data)
+	if _, err := os.Stat(src); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("source not removed after move: %v", err)
 	}
 }
