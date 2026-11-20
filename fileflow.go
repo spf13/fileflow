@@ -54,7 +54,7 @@ const (
 	maxIncrementAttempts = 100
 )
 
-// errDstIsDir is returned, wrapped in ErrFailedMovingFile, when the
+// errDstIsDir is returned, wrapped once in ErrFailedMovingFile, when the
 // destination is an existing directory.
 var errDstIsDir = fmt.Errorf("destination is a directory: %w", fs.ErrExist)
 
@@ -367,7 +367,7 @@ func (f *Flow) resolveDst(ctx context.Context, src, dst string, verify bool) (pa
 	}
 	if info, err := os.Stat(dst); err == nil {
 		if info.IsDir() {
-			return "", false, sum, &ErrFailedMovingFile{Err: errDstIsDir, Src: src, Dst: dst}
+			return "", false, sum, errDstIsDir
 		}
 		if info.Mode().IsRegular() {
 			var h hash.Hash

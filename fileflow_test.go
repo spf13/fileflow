@@ -26,6 +26,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -1671,6 +1672,9 @@ func TestOntoDirectoryFailsFast(t *testing.T) {
 				}
 				if errors.Is(err, ErrMaxAttemptsReached) {
 					t.Fatalf("%s(%q) retried until exhaustion: %v", name, dst, err)
+				}
+				if n := strings.Count(err.Error(), "failed moving file"); n != 1 {
+					t.Fatalf("%s(%q) error wrapped %d times: %v", name, dst, n, err)
 				}
 				if !Exists(src) {
 					t.Fatalf("%s(%q) consumed the source", name, dst)
