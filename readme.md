@@ -203,14 +203,17 @@ finalPath, err := f.Move("source.txt", "destination.txt")
 
 ```go
 type Flow struct {
-    FindAvailableName func(string) (string, error)
-    DirMode           fs.FileMode
-    NoCreateDirs      bool
-    NoPreserveTimes   bool
-    Progress          func(done, total int64)
-    Verify            bool
+    FindAvailableName      func(string) (string, error)
+    DirMode                fs.FileMode
+    NoCreateDirs           bool
+    AllowOverwriteFallback bool
+    NoPreserveTimes        bool
+    Progress               func(done, total int64)
+    Verify                 bool
 }
 ```
+
+`AllowOverwriteFallback` matters only on Unix filesystems with neither an atomic no-replace rename nor hard links: when set, the rename falls back to a plain rename there and the no-overwrite guarantee becomes best-effort; when unset (the default), the link error is returned.
 
 The zero value is ready to use. A nil `FindAvailableName` uses `FindAvailableNameInc`, and a zero `DirMode` uses `0755`. `Flow` has `Move`, `MoveContext`, `Rename`, `Copy`, `CopyContext`, and `Replace` methods with the same signatures and behavior as the package-level functions, plus `CopyResult` and `MoveResult` (Flow-only, since `Verify` is off in the zero value); `Replace` ignores the naming strategy and deliberately overwrites the exact destination.
 
