@@ -196,7 +196,8 @@ func (f *Flow) ensureDir(dst string) error {
 
 // validateRegularFile checks that src is a regular file via Lstat.
 // Symlinks, directories, and other non-regular files return fs.ErrInvalid
-// wrapped in *ErrFailedMovingFile.
+// wrapped in *ErrFailedMovingFile, as does a dst that names a directory by
+// shape (see isFilePath).
 func (f *Flow) validateRegularFile(src, dst string) error {
 	info, err := os.Lstat(src)
 	if err != nil {
@@ -205,7 +206,22 @@ func (f *Flow) validateRegularFile(src, dst string) error {
 	if !info.Mode().IsRegular() {
 		return &ErrFailedMovingFile{Err: fs.ErrInvalid, Src: src, Dst: dst}
 	}
+	if !isFilePath(dst) {
+		return &ErrFailedMovingFile{Err: fs.ErrInvalid, Src: src, Dst: dst}
+	}
 	return nil
+}
+
+// isFilePath reports whether dst names a file rather than a directory by
+// shape: it must not end in a path separator or have a final element of
+// "." or "..". Without this check, conflict naming would turn "photos/"
+// into "photos/-1", writing into the directory.
+func isFilePath(dst string) bool {
+	if dst == "" || os.IsPathSeparator(dst[len(dst)-1]) {
+		return false
+	}
+	base := filepath.Base(dst)
+	return base != "." && base != ".."
 }
 
 // parseContSuffix parses a trailing "-N" suffix from s.
@@ -360,7 +376,9 @@ func (f *Flow) resolveDst(ctx context.Context, src, dst string, verify bool) (pa
 	if !taken(dst) {
 		return dst, false, sum, nil
 	}
-	if info, err := os.Stat(dst); err == nil {
+	// Lstat: a symlink at dst is an occupied name, never followed for
+	// dedup, so Move cannot delete src because a link points at a copy.
+	if info, err := os.Lstat(dst); err == nil {
 		if info.Mode().IsRegular() {
 			var h hash.Hash
 			if verify {
@@ -519,7 +537,9 @@ func taken(path string) bool {
 	return err == nil
 }
 
-// Exists reports whether an accessible regular file exists at the given path. It returns false for directories and inaccessible paths.
+// Exists reports whether an accessible entry other than a directory exists at
+// path, following symlinks. It returns false for directories, missing or
+// inaccessible paths, and dangling symlinks.
 func Exists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && !info.IsDir()

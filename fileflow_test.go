@@ -2184,3 +2184,69 @@ func TestReadersEqualChunkBoundaries(t *testing.T) {
 		})
 	}
 }
+
+func TestDirectoryShapedDstRejected(t *testing.T) {
+	ops := map[string]func(string, string) (string, error){
+		"Move": Move, "Copy": Copy, "Rename": Rename,
+	}
+	for name, op := range ops {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			src := filepath.Join(dir, "src.txt")
+			if err := os.WriteFile(src, []byte("data"), 0644); err != nil {
+				t.Fatal(err)
+			}
+			photos := filepath.Join(dir, "photos")
+			if err := os.Mkdir(photos, 0755); err != nil {
+				t.Fatal(err)
+			}
+			sep := string(filepath.Separator)
+			for _, dst := range []string{
+				photos + sep,
+				photos + sep + ".",
+				photos + sep + "..",
+				filepath.Join(dir, "new") + sep,
+			} {
+				got, err := op(src, dst)
+				var mv *ErrFailedMovingFile
+				if got != "" || !errors.As(err, &mv) || !errors.Is(err, fs.ErrInvalid) {
+					t.Fatalf("%s(%q) = %q, %v; want \"\", *ErrFailedMovingFile matching fs.ErrInvalid", name, dst, got, err)
+				}
+			}
+			assertContents(t, src, []byte("data"))
+			if entries, err := os.ReadDir(photos); err != nil || len(entries) != 0 {
+				t.Fatalf("%s wrote into the directory: %v, %v", name, entries, err)
+			}
+			if _, err := os.Stat(filepath.Join(dir, "new")); !errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("%s created a directory for a directory-shaped dst", name)
+			}
+		})
+	}
+}
+
+func TestMoveOntoSymlinkToIdenticalFileKeepsSource(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src.txt")
+	orig := filepath.Join(dir, "orig.txt")
+	for _, p := range []string{src, orig} {
+		if err := os.WriteFile(p, []byte("same"), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	link := filepath.Join(dir, "link.txt")
+	if err := os.Symlink(orig, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	got, err := Move(src, link)
+	want := filepath.Join(dir, "link-1.txt")
+	if err != nil || got != want {
+		t.Fatalf("Move = %q, %v; want %q, nil", got, err, want)
+	}
+	assertContents(t, got, []byte("same"))
+	if fi, err := os.Lstat(got); err != nil || !fi.Mode().IsRegular() {
+		t.Fatalf("result is not a regular file: %v, %v", fi, err)
+	}
+	if target, err := os.Readlink(link); err != nil || target != orig {
+		t.Fatalf("symlink changed: %q, %v", target, err)
+	}
+}
