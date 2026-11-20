@@ -32,10 +32,21 @@ func syncDir(dir string) error {
 // renameNoReplace renames src to dst, failing with an error satisfying
 // errors.Is(err, fs.ErrExist) if dst already exists. It never overwrites dst.
 //
-// os.Rename on Unix overwrites silently, so this uses link+remove: link
-// fails atomically with EEXIST if dst exists. On filesystems without hard
-// link support it falls back to a plain rename, which is best-effort only.
+// os.Rename on Unix overwrites silently. Where the kernel offers an atomic
+// no-replace rename (Linux renameat2, macOS renamex_np) it is used. Otherwise
+// this uses link+remove: link fails atomically with EEXIST if dst exists. On
+// filesystems without hard link support it falls back to a plain rename only
+// when allowOverwriteFallback is set, which is best-effort.
 func renameNoReplace(src, dst string, allowOverwriteFallback bool) error {
+	if done, err := renameExclusive(src, dst); done {
+		return err
+	}
+	return renameLink(src, dst, allowOverwriteFallback)
+}
+
+// renameLink is renameNoReplace's fallback when no atomic no-replace rename
+// is available: link fails with EEXIST if dst exists, then src is removed.
+func renameLink(src, dst string, allowOverwriteFallback bool) error {
 	err := os.Link(src, dst)
 	if err == nil {
 		if rmErr := os.Remove(src); rmErr != nil {
