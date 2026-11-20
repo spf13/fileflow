@@ -163,9 +163,14 @@ func (f *Flow) dirMode() fs.FileMode {
 	return DefaultDirMode
 }
 
-// splitExt splits name into stem and extension.
+// splitExt splits name into everything before the extension and the
+// extension itself. A leading dot marks a hidden file, not an extension, so
+// ".bashrc" has none.
 func splitExt(name string) (stem, ext string) {
 	ext = filepath.Ext(name)
+	if ext == filepath.Base(name) {
+		ext = ""
+	}
 	return name[:len(name)-len(ext)], ext
 }
 
