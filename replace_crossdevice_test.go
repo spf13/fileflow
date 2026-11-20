@@ -3,6 +3,8 @@
 package fileflow
 
 import (
+	"context"
+	"crypto/sha256"
 	"errors"
 	"io/fs"
 	"os"
@@ -57,6 +59,29 @@ func TestReplaceCrossFilesystem(t *testing.T) {
 		t.Fatalf("source permissions not preserved: %v, %v", info, err)
 	}
 	assertReplacementDirectory(t, dstDir, "deck")
+}
+
+func TestMoveCrossFilesystemPreservesTimes(t *testing.T) {
+	dstDir := t.TempDir()
+	srcDir := replacementCrossDeviceSource(t, dstDir)
+	src, dst := filepath.Join(srcDir, "stage"), filepath.Join(dstDir, "deck")
+	writeTimedFixture(t, src)
+	if _, err := Move(src, dst); err != nil {
+		t.Fatalf("Move() error: %v", err)
+	}
+	assertFixtureTimes(t, dst)
+}
+
+func TestReplaceCrossFilesystemPreservesTimes(t *testing.T) {
+	dstDir := t.TempDir()
+	srcDir := replacementCrossDeviceSource(t, dstDir)
+	src, dst := filepath.Join(srcDir, "stage"), filepath.Join(dstDir, "deck")
+	writeTimedFixture(t, src)
+	writeReplacementFixture(t, dst, "old deck")
+	if _, err := Replace(src, dst); err != nil {
+		t.Fatalf("Replace() error: %v", err)
+	}
+	assertFixtureTimes(t, dst)
 }
 
 func TestReplaceCrossFilesystemCopyReadFailure(t *testing.T) {
@@ -122,4 +147,99 @@ func assertReplacementDirectory(t *testing.T, dir, want string) {
 	if len(entries) != 1 || entries[0].Name() != want {
 		t.Fatalf("unexpected destination files after replacement: %v", entries)
 	}
+}
+
+func TestMoveContextCrossFilesystemCancel(t *testing.T) {
+	dstDir := t.TempDir()
+	srcDir := replacementCrossDeviceSource(t, dstDir)
+	src, dst := filepath.Join(srcDir, "src"), filepath.Join(dstDir, "dst")
+	data := writeSizedFixture(t, src, 3*copyChunkSize+copyChunkSize/2)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	f := Flow{Progress: func(done, total int64) { cancel() }}
+	final, err := f.MoveContext(ctx, src, dst)
+	if final != "" || !errors.Is(err, context.Canceled) {
+		t.Fatalf("MoveContext = %q, %v; want \"\", context.Canceled", final, err)
+	}
+	assertNoCopyOutput(t, dst)
+	assertContents(t, src, data)
+}
+
+func TestMoveContextCrossFilesystemProgress(t *testing.T) {
+	dstDir := t.TempDir()
+	srcDir := replacementCrossDeviceSource(t, dstDir)
+	src, dst := filepath.Join(srcDir, "src"), filepath.Join(dstDir, "dst")
+	size := int64(2*copyChunkSize + 17)
+	data := writeSizedFixture(t, src, int(size))
+	var calls int
+	var last int64
+	f := Flow{Progress: func(done, total int64) {
+		calls++
+		last = done
+		if total != size {
+			t.Errorf("Progress total = %d; want %d", total, size)
+		}
+	}}
+	final, err := f.MoveContext(context.Background(), src, dst)
+	if err != nil || final != dst {
+		t.Fatalf("MoveContext = %q, %v; want %q, nil", final, err, dst)
+	}
+	if calls < 2 || last != size {
+		t.Errorf("Progress calls = %d, last done = %d; want >= 2 calls ending at %d", calls, last, size)
+	}
+	assertContents(t, dst, data)
+	if _, err := os.Stat(src); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("source not removed after move: %v", err)
+	}
+}
+
+func TestMoveResultCrossFilesystemVerify(t *testing.T) {
+	dstDir := t.TempDir()
+	srcDir := replacementCrossDeviceSource(t, dstDir)
+	src, dst := filepath.Join(srcDir, "src"), filepath.Join(dstDir, "dst")
+	data := writeSizedFixture(t, src, copyChunkSize+123)
+	f := Flow{Verify: true}
+	r, err := f.MoveResult(context.Background(), src, dst)
+	if err != nil || r.Path != dst {
+		t.Fatalf("MoveResult = %+v, %v; want path %q", r, err, dst)
+	}
+	if r.Digest != sha256.Sum256(data) {
+		t.Errorf("Digest = %v; want %x", r.Digest, sha256.Sum256(data))
+	}
+	assertContents(t, dst, data)
+	if _, err := os.Stat(src); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("source not removed after verified move: %v", err)
+	}
+}
+
+func TestMoveResultCrossFilesystemVerifyMismatch(t *testing.T) {
+	dstDir := t.TempDir()
+	srcDir := replacementCrossDeviceSource(t, dstDir)
+	src, dst := filepath.Join(srcDir, "src"), filepath.Join(dstDir, "dst")
+	data := writeSizedFixture(t, src, 4096)
+	corruptBeforeVerify(t)
+	f := Flow{Verify: true}
+	r, err := f.MoveResult(context.Background(), src, dst)
+	if !errors.Is(err, ErrDigestMismatch) || r.Path != "" {
+		t.Fatalf("MoveResult = %+v, %v; want empty path, ErrDigestMismatch", r, err)
+	}
+	assertNoCopyOutput(t, dst)
+	assertContents(t, src, data)
+}
+
+func TestReplaceCrossFilesystemVerifyMismatch(t *testing.T) {
+	dstDir := t.TempDir()
+	srcDir := replacementCrossDeviceSource(t, dstDir)
+	src, dst := filepath.Join(srcDir, "stage"), filepath.Join(dstDir, "deck")
+	writeReplacementFixture(t, src, "new deck")
+	writeReplacementFixture(t, dst, "old deck")
+	corruptBeforeVerify(t)
+	f := Flow{Verify: true}
+	final, err := f.Replace(src, dst)
+	if final != "" || !errors.Is(err, ErrDigestMismatch) {
+		t.Fatalf("Replace = %q, %v; want empty path, ErrDigestMismatch", final, err)
+	}
+	assertReplacementContents(t, dst, "old deck")
+	assertReplacementContents(t, src, "new deck")
+	assertReplacementDirectory(t, dstDir, "deck")
 }

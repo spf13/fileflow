@@ -16,7 +16,7 @@ The `fileflow` package provides utilities to safely move, copy, rename, and expl
 
 ## Safety guarantees
 
-`Move`, `Copy`, and `Rename` never overwrite a non-identical file. Renames use no-replace primitives (`renameat2` with `RENAME_NOREPLACE` on Linux, `renamex_np` with `RENAME_EXCL` on macOS, `MoveFileEx` without `MOVEFILE_REPLACE_EXISTING` on Windows, link+remove on other Unix systems or where the atomic call is unsupported), so even a file created by a concurrent process between conflict resolution and the rename is safe: FileFlow detects the collision, resolves a new name, and retries. Where neither an atomic no-replace rename nor a hard link is possible (e.g. FAT on a system without `renameat2`), the rename falls back to a plain rename and the no-overwrite guarantee is best-effort. Copies are written to a temporary file in the destination directory, synced, set to the source file's mode, and renamed into place with the same no-replace primitive, so a failed copy does not leave a partial or truncated destination. When the destination is identical to the source, FileFlow deduplicates the operation instead of writing another copy. Any existing entry counts as an occupied name: a dangling symlink or special file at the destination gets a conflict suffix, and a destination that is an existing directory fails immediately with an `*ErrFailedMovingFile` matching `fs.ErrExist`. FileFlow never moves a file *into* a directory; pass the full destination file path.
+`Move`, `Copy`, and `Rename` never overwrite a non-identical file. Renames use no-replace primitives (`renameat2` with `RENAME_NOREPLACE` on Linux, `renamex_np` with `RENAME_EXCL` on macOS, `MoveFileEx` without `MOVEFILE_REPLACE_EXISTING` on Windows, link+remove on other Unix systems or where the atomic call is unsupported), so even a file created by a concurrent process between conflict resolution and the rename is safe: FileFlow detects the collision, resolves a new name, and retries. Where neither an atomic no-replace rename nor a hard link is possible (e.g. FAT on a system without `renameat2`), the rename fails with the link error unless `Flow.AllowOverwriteFallback` is set, in which case it falls back to a plain rename and the no-overwrite guarantee is best-effort. Copies are written to a temporary file in the destination directory, synced, set to the source file's mode and (by default, best-effort) its modification and access times, and renamed into place with the same no-replace primitive, so a failed copy does not leave a partial or truncated destination. When the destination is identical to the source, FileFlow deduplicates the operation instead of writing another copy. Any existing entry counts as an occupied name: a dangling symlink or special file at the destination gets a conflict suffix, and a destination that is an existing directory fails immediately with an `*ErrFailedMovingFile` matching `fs.ErrExist`. FileFlow never moves a file *into* a directory; pass the full destination file path.
 
 `Replace` is the explicit exception: it intentionally overwrites the exact destination, without conflict naming or a delete-then-move window. On the same filesystem it publishes by rename; across filesystems it first copies and syncs a temporary file in the destination directory, publishes that file, and then removes the source. The destination receives the source file's permissions. Atomic visibility requires filesystem rename support; this is not a promise of power-loss durability. Sync and close your staged source before calling `Replace` when durability matters. On Windows, open-file sharing rules can reject a replacement; the error is returned rather than deleting the old destination.
 
@@ -58,6 +58,47 @@ if err != nil {
     log.Fatal(err)
 }
 fmt.Println("File copied to:", finalPath)
+```
+
+### Cancellation and progress
+`CopyContext` and `MoveContext` (package-level and on `Flow`) take a `context.Context`. A context that is already done returns its error before anything is touched. During a copy the context is checked while comparing against an existing destination, between 1 MiB chunks, and once more before publishing; on cancellation the temporary file is removed, no destination is created, and the source is left intact. The error wraps `ctx.Err()` in `*ErrFailedMovingFile`, so `errors.Is(err, context.Canceled)` works. A same-filesystem `MoveContext` is a single rename, so it is checked only at entry and while comparing against an existing destination. Once the destination is published the operation completes; a cross-filesystem move still removes the source.
+
+Set `Flow.Progress` to observe copies. It is called synchronously from the copying goroutine after each chunk is written, with `total` taken from the source's pre-copy stat; the last call has `done` equal to the bytes copied. It is not called when nothing is copied (same-filesystem rename, identical-destination dedup), and must not block for long. `Replace` also honours `Progress` across filesystems.
+
+```go
+ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+defer cancel()
+f := fileflow.Flow{Progress: func(done, total int64) {
+    fmt.Printf("\r%d/%d bytes", done, total)
+}}
+finalPath, err := f.MoveContext(ctx, "/mnt/usb/video.mkv", "videos/video.mkv")
+if errors.Is(err, context.DeadlineExceeded) {
+    log.Fatal("move timed out; source left in place")
+}
+```
+
+Zero-value `Copy` and `Move` (no `Progress`, uncancellable context) keep using `io.Copy`, so kernel fast paths such as Linux `copy_file_range` still apply. A cancellable context or a `Progress` callback switches to the chunked loop.
+
+### Verified copies and digests
+Set `Flow.Verify` (off by default) to verify copies with SHA-256. `Copy`, and `Move`/`Replace` across filesystems, hash the source while copying, sync the temporary file, re-read and hash it, and publish only when the digests match. A mismatch returns an error wrapping `ErrDigestMismatch` (inside `*ErrFailedMovingFile`), removes the temporary file, publishes nothing, and leaves the source intact; a cross-filesystem `Move` never removes its source unless verification passed. Verify routes the copy through the hash, so kernel fast paths such as `copy_file_range` do not apply.
+
+`Flow.CopyResult` and `Flow.MoveResult` return a `Result` with the final `Path` and, when `Verify` is set, the content's `Digest` (a `[32]byte` with a hex `String` method), so callers can journal it without reading the file again. `CopyContext` and `MoveContext` return the same `Path`. Without `Verify` the digest is zero.
+
+- Identical-destination dedup hashes the source during the byte comparison; no extra read.
+- A same-filesystem `MoveResult` is a rename, so it hashes the file once at its final path afterwards. If that read fails, `MoveResult` returns the final `Path` together with the error. As with `*ErrFailedRemovingOriginal`, a non-empty `Path` alongside an error means the file is already at `Path`.
+- `Replace` honours `Verify` across filesystems (a mismatch leaves the old destination and the source intact) and still returns only the path. `Rename` ignores `Verify`.
+
+The re-read may be served from the page cache: verification catches short writes and corruption in the copy path, not media faults below the cache.
+
+```go
+f := fileflow.Flow{Verify: true}
+r, err := f.MoveResult(ctx, "/mnt/card/IMG_0001.CR3", "photos/IMG_0001.CR3")
+if err != nil {
+    // errors.Is(err, fileflow.ErrDigestMismatch): nothing published, source left in place.
+    // A non-empty r.Path alongside an error means the file already moved there.
+    log.Fatal(err)
+}
+journal(r.Path, r.Digest.String())
 ```
 
 ### Replace
@@ -165,12 +206,17 @@ type Flow struct {
     FindAvailableName func(string) (string, error)
     DirMode           fs.FileMode
     NoCreateDirs      bool
+    NoPreserveTimes   bool
+    Progress          func(done, total int64)
+    Verify            bool
 }
 ```
 
-The zero value is ready to use. A nil `FindAvailableName` uses `FindAvailableNameInc`, and a zero `DirMode` uses `0755`. `Flow` has `Move`, `Rename`, `Copy`, and `Replace` methods with the same signatures and behavior as the package-level functions; `Replace` ignores the naming strategy and deliberately overwrites the exact destination.
+The zero value is ready to use. A nil `FindAvailableName` uses `FindAvailableNameInc`, and a zero `DirMode` uses `0755`. `Flow` has `Move`, `MoveContext`, `Rename`, `Copy`, `CopyContext`, and `Replace` methods with the same signatures and behavior as the package-level functions, plus `CopyResult` and `MoveResult` (Flow-only, since `Verify` is off in the zero value); `Replace` ignores the naming strategy and deliberately overwrites the exact destination.
 
 FileFlow creates missing destination directories by default — a deliberate departure from `os.Rename` and OS defaults, which fail when the directory doesn't exist. Set `NoCreateDirs: true` to get standard-library behavior: operations then fail with the underlying `fs.ErrNotExist` instead of creating the directory. This is useful when, for example, the destination is a mount point that must already exist, so files can't be written to an accidentally-created directory on the wrong volume.
+
+Copies preserve the source's modification and access times by default: `Copy`, and `Move`/`Replace` across filesystems, set the destination's times to the source's (same-filesystem renames keep them anyway, since no copy happens). Preservation is best-effort: errors setting times are ignored, and precision is limited by the destination filesystem (FAT: 2 s mtime, date-only atime; exFAT: 10 ms). Set `NoPreserveTimes: true` to leave copies with the time of the copy. This default is the one zero-value behavior change introduced with this field; earlier releases left copies with copy-time timestamps.
 
 Configure a `Flow` before first use; do not mutate it concurrently with calls to its methods.
 
@@ -187,7 +233,7 @@ if err != nil {
 fmt.Println("File moved to:", finalPath)
 ```
 
-The package-level `Move`, `Rename`, `Copy`, and `Replace` functions remain available for simple usage and use the zero-value defaults. Per-instance `Flow` configuration replaces the mutable package globals from earlier versions; this is a breaking change.
+The package-level `Move`, `MoveContext`, `Rename`, `Copy`, `CopyContext`, and `Replace` functions remain available for simple usage and use the zero-value defaults. Per-instance `Flow` configuration replaces the mutable package globals from earlier versions; this is a breaking change.
 
 The maximum number of incrementing candidates is an internal constant of 100 and is not configurable.
 
@@ -196,11 +242,12 @@ The package exposes sentinel errors for `errors.Is`:
 
 * `ErrSameFile`: The source and destination refer to the same underlying file, including through different paths.
 * `ErrMaxAttemptsReached`: A naming strategy found no free candidate (the counter strategies try 100), or `Move`, `Copy`, or `Rename` lost the race for a chosen name 100 times in a row.
+* `ErrDigestMismatch`: With `Flow.Verify`, the synced copy did not read back with the source's SHA-256 digest. Nothing was published and the source is intact.
 
 It also exposes structured errors for `errors.As`; both unwrap their underlying cause:
 
-* `ErrFailedRemovingOriginal`: Indicates failure to remove the original file after copying or deduplicating. Exposes `File` (the original path) and `Err`.
-* `ErrFailedMovingFile`: Indicates failure to rename a file from the source to the destination, including a missing source in `Move`, `Rename`, or `Replace` (matches `fs.ErrNotExist`), a non-regular `Replace` source (matches `fs.ErrInvalid`), and a destination that is an existing directory (matches `fs.ErrExist`). Exposes `Src`, `Dst`, and `Err`.
+* `ErrFailedRemovingOriginal`: Indicates failure to remove the original file after copying or deduplicating. Exposes `File` (the original path) and `Err`. When a function returns a non-empty destination path alongside `*ErrFailedRemovingOriginal`, the destination is already committed.
+* `ErrFailedMovingFile`: Indicates failure to rename a file from the source to the destination, including a missing source (matches `fs.ErrNotExist`), a non-regular source (matches `fs.ErrInvalid`), and a destination that is an existing directory (matches `fs.ErrExist`). Exposes `Src`, `Dst`, and `Err`.
 
 ## Example
 

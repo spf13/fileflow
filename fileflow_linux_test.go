@@ -25,7 +25,7 @@ const (
 // link to a source it failed to remove.
 func TestRenameNoReplaceUnprivileged(t *testing.T) {
 	if src := os.Getenv(unprivSrcEnv); src != "" {
-		err := renameNoReplace(src, os.Getenv(unprivDstEnv))
+		err := renameNoReplace(src, os.Getenv(unprivDstEnv), false)
 		fmt.Printf("exist=%v err=%v\n", errors.Is(err, fs.ErrExist), err)
 		return
 	}

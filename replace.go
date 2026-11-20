@@ -1,7 +1,7 @@
 package fileflow
 
 import (
-	"fmt"
+	"context"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -26,7 +26,9 @@ func Replace(src, dst string) (string, error) {
 }
 
 // Replace moves src to exactly dst with the semantics of [Replace]. It respects
-// DirMode and NoCreateDirs, but does not use FindAvailableName.
+// DirMode, NoCreateDirs, NoPreserveTimes, Progress, and Verify (across
+// filesystems; a mismatch leaves dst and src intact), but does not use
+// FindAvailableName.
 func (f *Flow) Replace(src, dst string) (string, error) {
 	info, err := os.Lstat(src)
 	if err != nil {
@@ -38,27 +40,27 @@ func (f *Flow) Replace(src, dst string) (string, error) {
 	if sameFileReplace(src, dst, info) {
 		return "", ErrSameFile
 	}
-	if !f.NoCreateDirs {
-		if err := os.MkdirAll(filepath.Dir(dst), f.dirMode()); err != nil {
-			return "", fmt.Errorf("creating destination directory: %w", err)
-		}
+	if err := f.ensureDir(dst); err != nil {
+		return "", &ErrFailedMovingFile{Err: err, Src: src, Dst: dst}
 	}
 
 	if err := renameReplace(src, dst); err == nil {
+		_ = syncDir(filepath.Dir(dst))
 		return dst, nil
 	} else if !isCrossDeviceError(err) {
 		return "", &ErrFailedMovingFile{Err: err, Src: src, Dst: dst}
 	}
 
 	// Publish only after copying and syncing the full file on the target volume.
-	tmp, err := copyToTemp(src, filepath.Dir(dst))
+	tmp, _, err := f.copyToTemp(context.Background(), src, filepath.Dir(dst))
 	if err != nil {
-		return "", err
+		return "", &ErrFailedMovingFile{Err: err, Src: src, Dst: dst}
 	}
 	defer func() { _ = os.Remove(tmp) }() // no-op after a successful publish
 	if err := renameReplace(tmp, dst); err != nil {
 		return "", &ErrFailedMovingFile{Err: err, Src: src, Dst: dst}
 	}
+	_ = syncDir(filepath.Dir(dst))
 	if err := os.Remove(src); err != nil {
 		return dst, &ErrFailedRemovingOriginal{Err: err, File: src}
 	}
