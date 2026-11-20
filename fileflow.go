@@ -54,10 +54,6 @@ const (
 	maxIncrementAttempts = 100
 )
 
-// errDstIsDir is returned, wrapped once in ErrFailedMovingFile, when the
-// destination is an existing directory.
-var errDstIsDir = fmt.Errorf("destination is a directory: %w", fs.ErrExist)
-
 var (
 	ErrSameFile           = errors.New("source and destination are the same")
 	ErrMaxAttemptsReached = errors.New("maximum increment attempts reached")
@@ -303,8 +299,7 @@ func MoveContext(ctx context.Context, src, dst string) (string, error) {
 
 // Move tries to move a file atomically using rename if possible,
 // falling back to copy+delete if files are on different filesystems.
-// Conflicts are handled as in Rename; an existing directory at dst is an
-// error, not a place to move into.
+// Conflicts are handled as in Rename.
 func (f *Flow) Move(src, dst string) (string, error) {
 	return f.MoveContext(context.Background(), src, dst)
 }
@@ -366,9 +361,6 @@ func (f *Flow) resolveDst(ctx context.Context, src, dst string, verify bool) (pa
 		return dst, false, sum, nil
 	}
 	if info, err := os.Stat(dst); err == nil {
-		if info.IsDir() {
-			return "", false, sum, errDstIsDir
-		}
 		if info.Mode().IsRegular() {
 			var h hash.Hash
 			if verify {
@@ -386,7 +378,8 @@ func (f *Flow) resolveDst(ctx context.Context, src, dst string, verify bool) (pa
 			}
 		}
 	}
-	// dst holds different content, a dangling symlink, or a special file.
+	// dst holds different content, a directory, a dangling symlink, or a
+	// special file: an occupied name for FindAvailableName to resolve.
 	path, err = f.findAvailableName(dst)
 	if err != nil {
 		return "", false, sum, fmt.Errorf("finding available name: %w", err)
@@ -470,8 +463,8 @@ func (f *Flow) publishWithRetry(
 // It returns the final destination path. The rename never replaces an
 // existing file: if a concurrent writer claims the chosen name between
 // conflict resolution and the rename, Rename re-resolves and retries.
-// If dst is an existing directory, Rename fails with an *ErrFailedMovingFile
-// matching fs.ErrExist; it never renames into the directory. Move and Copy
+// Anything at dst, including a directory, is an occupied name resolved by
+// FindAvailableName; Rename never renames into a directory. Move and Copy
 // behave the same way.
 func (f *Flow) Rename(src, dst string) (string, error) {
 	r, _, err := f.rename(context.Background(), src, dst, false)
@@ -696,9 +689,7 @@ func CopyContext(ctx context.Context, src, dst string) (string, error) {
 // It returns the final destination path written, which may differ from dst
 // when a naming conflict was resolved. On error it returns an empty path.
 // The final rename never replaces an existing file: if a concurrent writer
-// claims the chosen name, Copy re-resolves and retries. If dst is an
-// existing directory, Copy fails with an *ErrFailedMovingFile matching
-// fs.ErrExist.
+// claims the chosen name, Copy re-resolves and retries.
 func (f *Flow) Copy(src, dst string) (string, error) {
 	return f.CopyContext(context.Background(), src, dst)
 }

@@ -1987,49 +1987,68 @@ func TestMoveContextCancelDuringRenameCompare(t *testing.T) {
 	}
 }
 
-func TestOntoDirectoryFailsFast(t *testing.T) {
+func TestOntoDirectoryResolvesAsConflict(t *testing.T) {
 	ops := map[string]func(string, string) (string, error){
 		"Move": Move, "Copy": Copy, "Rename": Rename,
 	}
 	for name, op := range ops {
 		t.Run(name, func(t *testing.T) {
-			dir := t.TempDir()
-			src := filepath.Join(dir, "src.txt")
-			if err := os.WriteFile(src, []byte("data"), 0644); err != nil {
-				t.Fatal(err)
-			}
-			dstDir := filepath.Join(dir, "dst")
-			if err := os.Mkdir(dstDir, 0755); err != nil {
-				t.Fatal(err)
-			}
-			targets := []string{dstDir}
-			link := filepath.Join(dir, "dirlink")
-			if err := os.Symlink(dstDir, link); err == nil {
-				targets = append(targets, link)
-			}
+			for _, viaLink := range []bool{false, true} {
+				dir := t.TempDir()
+				src := filepath.Join(dir, "src.txt")
+				if err := os.WriteFile(src, []byte("data"), 0644); err != nil {
+					t.Fatal(err)
+				}
+				dstDir := filepath.Join(dir, "photos")
+				if err := os.Mkdir(dstDir, 0755); err != nil {
+					t.Fatal(err)
+				}
+				dst, want := dstDir, filepath.Join(dir, "photos-1")
+				if viaLink {
+					dst, want = filepath.Join(dir, "dirlink"), filepath.Join(dir, "dirlink-1")
+					if err := os.Symlink(dstDir, dst); err != nil {
+						t.Skipf("symlinks unavailable: %v", err)
+					}
+				}
 
-			for _, dst := range targets {
 				got, err := op(src, dst)
-				var mv *ErrFailedMovingFile
-				if got != "" || !errors.As(err, &mv) || !errors.Is(err, fs.ErrExist) {
-					t.Fatalf("%s(%q) = %q, %v; want \"\", *ErrFailedMovingFile matching fs.ErrExist", name, dst, got, err)
+				if err != nil || got != want {
+					t.Fatalf("%s(%q) = %q, %v; want %q, nil", name, dst, got, err, want)
 				}
-				if errors.Is(err, ErrMaxAttemptsReached) {
-					t.Fatalf("%s(%q) retried until exhaustion: %v", name, dst, err)
+				assertContents(t, got, []byte("data"))
+				if entries, err := os.ReadDir(dstDir); err != nil || len(entries) != 0 {
+					t.Fatalf("%s wrote into the directory: %v, %v", name, entries, err)
 				}
-				if n := strings.Count(err.Error(), "failed moving file"); n != 1 {
-					t.Fatalf("%s(%q) error wrapped %d times: %v", name, dst, n, err)
-				}
-				if !Exists(src) {
-					t.Fatalf("%s(%q) consumed the source", name, dst)
-				}
-				entries, err := os.ReadDir(dstDir)
-				if err != nil || len(entries) != 0 {
-					t.Fatalf("destination directory modified: %v, %v", entries, err)
+				if srcKept := Exists(src); srcKept != (name == "Copy") {
+					t.Fatalf("%s: source exists = %v", name, srcKept)
 				}
 			}
 		})
 	}
+}
+
+func TestOntoDirectoryUsesStrategy(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src.txt")
+	if err := os.WriteFile(src, []byte("data"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(dir, "taken")
+	if err := os.Mkdir(dst, 0755); err != nil {
+		t.Fatal(err)
+	}
+	errTaken := errors.New("taken")
+	f := Flow{FindAvailableName: func(string) (string, error) { return "", errTaken }}
+	for name, op := range map[string]func(string, string) (string, error){"Move": f.Move, "Copy": f.Copy, "Rename": f.Rename} {
+		got, err := op(src, dst)
+		if got != "" || !errors.Is(err, errTaken) {
+			t.Errorf("%s = %q, %v; want the strategy's error", name, got, err)
+		}
+		if err != nil && strings.Count(err.Error(), "failed moving file") != 1 {
+			t.Errorf("%s error not wrapped exactly once: %v", name, err)
+		}
+	}
+	assertContents(t, src, []byte("data"))
 }
 
 func TestMoveOntoDanglingSymlink(t *testing.T) {
