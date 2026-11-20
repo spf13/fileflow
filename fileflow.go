@@ -26,7 +26,7 @@ limitations under the License.
 package fileflow
 
 import (
-	"bufio"
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -159,19 +159,24 @@ func (f *Flow) dirMode() fs.FileMode {
 	return DefaultDirMode
 }
 
-// splitExt splits name into stem and extension.
+// splitExt splits name into everything before the extension and the
+// extension itself. A leading dot marks a hidden file, not an extension, so
+// ".bashrc" has none.
 func splitExt(name string) (stem, ext string) {
 	ext = filepath.Ext(name)
+	if ext == filepath.Base(name) {
+		ext = ""
+	}
 	return name[:len(name)-len(ext)], ext
 }
 
 // findAvailable generates candidate names by calling next with incrementing
-// counters starting at 1 and returns the first that does not exist.
+// counters starting at 1 and returns the first path that nothing occupies.
 func findAvailable(baseName string, next func(stem, ext string, i int) string) (string, error) {
 	stem, ext := splitExt(baseName)
 	for i := 1; i <= maxIncrementAttempts; i++ {
 		cand := next(stem, ext, i)
-		if !Exists(cand) {
+		if !taken(cand) {
 			return cand, nil
 		}
 	}
@@ -191,7 +196,8 @@ func (f *Flow) ensureDir(dst string) error {
 
 // validateRegularFile checks that src is a regular file via Lstat.
 // Symlinks, directories, and other non-regular files return fs.ErrInvalid
-// wrapped in *ErrFailedMovingFile.
+// wrapped in *ErrFailedMovingFile, as does a dst that names a directory by
+// shape (see isFilePath).
 func (f *Flow) validateRegularFile(src, dst string) error {
 	info, err := os.Lstat(src)
 	if err != nil {
@@ -200,7 +206,22 @@ func (f *Flow) validateRegularFile(src, dst string) error {
 	if !info.Mode().IsRegular() {
 		return &ErrFailedMovingFile{Err: fs.ErrInvalid, Src: src, Dst: dst}
 	}
+	if !isFilePath(dst) {
+		return &ErrFailedMovingFile{Err: fs.ErrInvalid, Src: src, Dst: dst}
+	}
 	return nil
+}
+
+// isFilePath reports whether dst names a file rather than a directory by
+// shape: it must not end in a path separator or have a final element of
+// "." or "..". Without this check, conflict naming would turn "photos/"
+// into "photos/-1", writing into the directory.
+func isFilePath(dst string) bool {
+	if dst == "" || os.IsPathSeparator(dst[len(dst)-1]) {
+		return false
+	}
+	base := filepath.Base(dst)
+	return base != "." && base != ".."
 }
 
 // parseContSuffix parses a trailing "-N" suffix from s.
@@ -294,6 +315,7 @@ func MoveContext(ctx context.Context, src, dst string) (string, error) {
 
 // Move tries to move a file atomically using rename if possible,
 // falling back to copy+delete if files are on different filesystems.
+// Conflicts are handled as in Rename.
 func (f *Flow) Move(src, dst string) (string, error) {
 	return f.MoveContext(context.Background(), src, dst)
 }
@@ -323,9 +345,6 @@ func (f *Flow) MoveResult(ctx context.Context, src, dst string) (Result, error) 
 	if err := f.validateRegularFile(src, dst); err != nil {
 		return Result{}, err
 	}
-	if sameFile(src, dst) {
-		return Result{}, ErrSameFile
-	}
 
 	r, renamed, err := f.rename(ctx, src, dst, f.Verify)
 	if err != nil {
@@ -354,23 +373,31 @@ func (f *Flow) resolveDst(ctx context.Context, src, dst string, verify bool) (pa
 	if sameFile(src, dst) {
 		return "", false, sum, ErrSameFile
 	}
-	if !Exists(dst) {
+	if !taken(dst) {
 		return dst, false, sum, nil
 	}
-	var h hash.Hash
-	if verify {
-		h = sha256.New()
-	}
-	same, err := compare(ctx, src, dst, h)
-	if err != nil {
-		return "", false, sum, fmt.Errorf("checking file identity: %w", err)
-	}
-	if same {
-		if h != nil {
-			h.Sum(sum[:0])
+	// Lstat: a symlink at dst is an occupied name, never followed for
+	// dedup, so Move cannot delete src because a link points at a copy.
+	if info, err := os.Lstat(dst); err == nil {
+		if info.Mode().IsRegular() {
+			var h hash.Hash
+			if verify {
+				h = sha256.New()
+			}
+			same, err := compare(ctx, src, dst, h)
+			if err != nil {
+				return "", false, sum, fmt.Errorf("checking file identity: %w", err)
+			}
+			if same {
+				if h != nil {
+					h.Sum(sum[:0])
+				}
+				return dst, true, sum, nil
+			}
 		}
-		return dst, true, sum, nil
 	}
+	// dst holds different content, a directory, a dangling symlink, or a
+	// special file: an occupied name for FindAvailableName to resolve.
 	path, err = f.findAvailableName(dst)
 	if err != nil {
 		return "", false, sum, fmt.Errorf("finding available name: %w", err)
@@ -454,6 +481,9 @@ func (f *Flow) publishWithRetry(
 // It returns the final destination path. The rename never replaces an
 // existing file: if a concurrent writer claims the chosen name between
 // conflict resolution and the rename, Rename re-resolves and retries.
+// Anything at dst, including a directory, is an occupied name resolved by
+// FindAvailableName; Rename never renames into a directory. Move and Copy
+// behave the same way.
 func (f *Flow) Rename(src, dst string) (string, error) {
 	r, _, err := f.rename(context.Background(), src, dst, false)
 	return r.Path, err
@@ -499,7 +529,17 @@ func (f *Flow) moveByCopy(ctx context.Context, src, dst string) (Result, error) 
 	return r, nil
 }
 
-// Exists reports whether an accessible regular file exists at the given path. It returns false for directories and inaccessible paths.
+// taken reports whether anything, including a directory or a dangling
+// symlink, occupies path. Naming strategies use it so they never pick a
+// candidate that the no-replace rename would refuse.
+func taken(path string) bool {
+	_, err := os.Lstat(path)
+	return err == nil
+}
+
+// Exists reports whether an accessible entry other than a directory exists at
+// path, following symlinks. It returns false for directories, missing or
+// inaccessible paths, and dangling symlinks.
 func Exists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && !info.IsDir()
@@ -551,7 +591,7 @@ func FindAvailableNameAuto(baseName string) (string, error) {
 func FindAvailableNameTS(baseName string) (string, error) {
 	stem, ext := splitExt(baseName)
 	candidate := fmt.Sprintf("%s-%s%s", stem, time.Now().Format("20060102-150405.000000000"), ext)
-	if !Exists(candidate) {
+	if !taken(candidate) {
 		return candidate, nil
 	}
 	return FindAvailableNameInc(candidate)
@@ -588,13 +628,13 @@ func compare(ctx context.Context, file1, file2 string, h hash.Hash) (bool, error
 	if err != nil {
 		return false, fmt.Errorf("opening first file: %w", err)
 	}
-	defer f1.Close()
+	defer func() { _ = f1.Close() }() // read-only; nothing to flush
 
 	f2, err := os.Open(file2)
 	if err != nil {
 		return false, fmt.Errorf("opening second file: %w", err)
 	}
-	defer f2.Close()
+	defer func() { _ = f2.Close() }()
 
 	var r1, r2 io.Reader = f1, f2
 	if ctx.Done() != nil {
@@ -620,24 +660,27 @@ func (r ctxReader) Read(p []byte) (int, error) {
 }
 
 func readersEqual(r1, r2 io.Reader) (bool, error) {
-	b1 := bufio.NewReader(r1)
-	b2 := bufio.NewReader(r2)
+	const chunk = 64 * 1024
+	b1 := make([]byte, chunk)
+	b2 := make([]byte, chunk)
 
 	for {
-		byte1, err1 := b1.ReadByte()
-		byte2, err2 := b2.ReadByte()
-
-		if err1 != nil && err1 != io.EOF {
+		// ReadFull fills each buffer unless the reader ends, so short reads
+		// from either side cannot misalign the comparison.
+		n1, err1 := io.ReadFull(r1, b1)
+		if err1 != nil && err1 != io.EOF && err1 != io.ErrUnexpectedEOF {
 			return false, fmt.Errorf("reading first file: %w", err1)
 		}
-		if err2 != nil && err2 != io.EOF {
+		n2, err2 := io.ReadFull(r2, b2)
+		if err2 != nil && err2 != io.EOF && err2 != io.ErrUnexpectedEOF {
 			return false, fmt.Errorf("reading second file: %w", err2)
 		}
-		if err1 == io.EOF || err2 == io.EOF {
-			return err1 == io.EOF && err2 == io.EOF, nil
-		}
-		if byte1 != byte2 {
+		if !bytes.Equal(b1[:n1], b2[:n2]) {
 			return false, nil
+		}
+		if err1 != nil || err2 != nil {
+			// At least one reader ended; equal only if both did.
+			return err1 != nil && err2 != nil, nil
 		}
 	}
 }
@@ -699,10 +742,10 @@ func (f *Flow) CopyResult(ctx context.Context, src, dst string) (Result, error) 
 			return "", sum, nil, err
 		}
 		if err := ctx.Err(); err != nil {
-			os.Remove(tmpName)
+			_ = os.Remove(tmpName)
 			return "", sum, nil, err
 		}
-		return tmpName, sum, func() { os.Remove(tmpName) }, nil
+		return tmpName, sum, func() { _ = os.Remove(tmpName) }, nil
 	})
 }
 
@@ -719,7 +762,7 @@ func (f *Flow) copyToTemp(ctx context.Context, src, dir string) (string, Digest,
 	if err != nil {
 		return "", sum, fmt.Errorf("opening source file: %w", err)
 	}
-	defer sourceFile.Close()
+	defer func() { _ = sourceFile.Close() }() // read-only; nothing to flush
 
 	// Stat the open source before io.Copy so the captured access time is the
 	// pre-copy value, not one bumped by reading the file.
@@ -736,8 +779,9 @@ func (f *Flow) copyToTemp(ctx context.Context, src, dir string) (string, Digest,
 	success := false
 	defer func() {
 		if !success {
-			tmp.Close()
-			os.Remove(tmpName)
+			// Best-effort cleanup; the original error is what matters.
+			_ = tmp.Close()
+			_ = os.Remove(tmpName)
 		}
 	}()
 
@@ -834,7 +878,7 @@ func hashFile(ctx context.Context, path string) (Digest, error) {
 	if err != nil {
 		return sum, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	var r io.Reader = file
 	if ctx.Done() != nil {
 		r = ctxReader{ctx, file}

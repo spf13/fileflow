@@ -29,7 +29,9 @@ func BenchmarkCopy(b *testing.B) {
 		if err != nil {
 			b.Fatal(err)
 		}
-		os.Remove(final)
+		if err := os.Remove(final); err != nil {
+			b.Fatal(err)
+		}
 	}
 }
 
