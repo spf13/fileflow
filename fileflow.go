@@ -54,6 +54,10 @@ const (
 	maxIncrementAttempts = 100
 )
 
+// errDstIsDir is returned, wrapped once in ErrFailedMovingFile, when the
+// destination is an existing directory.
+var errDstIsDir = fmt.Errorf("destination is a directory: %w", fs.ErrExist)
+
 var (
 	ErrSameFile           = errors.New("source and destination are the same")
 	ErrMaxAttemptsReached = errors.New("maximum increment attempts reached")
@@ -166,12 +170,12 @@ func splitExt(name string) (stem, ext string) {
 }
 
 // findAvailable generates candidate names by calling next with incrementing
-// counters starting at 1 and returns the first that does not exist.
+// counters starting at 1 and returns the first path that nothing occupies.
 func findAvailable(baseName string, next func(stem, ext string, i int) string) (string, error) {
 	stem, ext := splitExt(baseName)
 	for i := 1; i <= maxIncrementAttempts; i++ {
 		cand := next(stem, ext, i)
-		if !Exists(cand) {
+		if !taken(cand) {
 			return cand, nil
 		}
 	}
@@ -294,6 +298,8 @@ func MoveContext(ctx context.Context, src, dst string) (string, error) {
 
 // Move tries to move a file atomically using rename if possible,
 // falling back to copy+delete if files are on different filesystems.
+// Conflicts are handled as in Rename; an existing directory at dst is an
+// error, not a place to move into.
 func (f *Flow) Move(src, dst string) (string, error) {
 	return f.MoveContext(context.Background(), src, dst)
 }
@@ -354,23 +360,31 @@ func (f *Flow) resolveDst(ctx context.Context, src, dst string, verify bool) (pa
 	if sameFile(src, dst) {
 		return "", false, sum, ErrSameFile
 	}
-	if !Exists(dst) {
+	if !taken(dst) {
 		return dst, false, sum, nil
 	}
-	var h hash.Hash
-	if verify {
-		h = sha256.New()
-	}
-	same, err := compare(ctx, src, dst, h)
-	if err != nil {
-		return "", false, sum, fmt.Errorf("checking file identity: %w", err)
-	}
-	if same {
-		if h != nil {
-			h.Sum(sum[:0])
+	if info, err := os.Stat(dst); err == nil {
+		if info.IsDir() {
+			return "", false, sum, errDstIsDir
 		}
-		return dst, true, sum, nil
+		if info.Mode().IsRegular() {
+			var h hash.Hash
+			if verify {
+				h = sha256.New()
+			}
+			same, err := compare(ctx, src, dst, h)
+			if err != nil {
+				return "", false, sum, fmt.Errorf("checking file identity: %w", err)
+			}
+			if same {
+				if h != nil {
+					h.Sum(sum[:0])
+				}
+				return dst, true, sum, nil
+			}
+		}
 	}
+	// dst holds different content, a dangling symlink, or a special file.
 	path, err = f.findAvailableName(dst)
 	if err != nil {
 		return "", false, sum, fmt.Errorf("finding available name: %w", err)
@@ -454,6 +468,9 @@ func (f *Flow) publishWithRetry(
 // It returns the final destination path. The rename never replaces an
 // existing file: if a concurrent writer claims the chosen name between
 // conflict resolution and the rename, Rename re-resolves and retries.
+// If dst is an existing directory, Rename fails with an *ErrFailedMovingFile
+// matching fs.ErrExist; it never renames into the directory. Move and Copy
+// behave the same way.
 func (f *Flow) Rename(src, dst string) (string, error) {
 	r, _, err := f.rename(context.Background(), src, dst, false)
 	return r.Path, err
@@ -497,6 +514,14 @@ func (f *Flow) moveByCopy(ctx context.Context, src, dst string) (Result, error) 
 		return r, &ErrFailedRemovingOriginal{Err: err, File: src}
 	}
 	return r, nil
+}
+
+// taken reports whether anything, including a directory or a dangling
+// symlink, occupies path. Naming strategies use it so they never pick a
+// candidate that the no-replace rename would refuse.
+func taken(path string) bool {
+	_, err := os.Lstat(path)
+	return err == nil
 }
 
 // Exists reports whether an accessible regular file exists at the given path. It returns false for directories and inaccessible paths.
@@ -551,7 +576,7 @@ func FindAvailableNameAuto(baseName string) (string, error) {
 func FindAvailableNameTS(baseName string) (string, error) {
 	stem, ext := splitExt(baseName)
 	candidate := fmt.Sprintf("%s-%s%s", stem, time.Now().Format("20060102-150405.000000000"), ext)
-	if !Exists(candidate) {
+	if !taken(candidate) {
 		return candidate, nil
 	}
 	return FindAvailableNameInc(candidate)
@@ -666,7 +691,9 @@ func CopyContext(ctx context.Context, src, dst string) (string, error) {
 // It returns the final destination path written, which may differ from dst
 // when a naming conflict was resolved. On error it returns an empty path.
 // The final rename never replaces an existing file: if a concurrent writer
-// claims the chosen name, Copy re-resolves and retries.
+// claims the chosen name, Copy re-resolves and retries. If dst is an
+// existing directory, Copy fails with an *ErrFailedMovingFile matching
+// fs.ErrExist.
 func (f *Flow) Copy(src, dst string) (string, error) {
 	return f.CopyContext(context.Background(), src, dst)
 }

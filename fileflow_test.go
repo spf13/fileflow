@@ -26,6 +26,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"strings"
 	"sync/atomic"
 	"syscall"
 	"testing"
@@ -1977,5 +1978,115 @@ func TestMoveContextCancelDuringRenameCompare(t *testing.T) {
 	}
 	if len(entries) != 2 {
 		t.Errorf("directory entries = %v; want only src and dst", entries)
+	}
+}
+
+func TestOntoDirectoryFailsFast(t *testing.T) {
+	ops := map[string]func(string, string) (string, error){
+		"Move": Move, "Copy": Copy, "Rename": Rename,
+	}
+	for name, op := range ops {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			src := filepath.Join(dir, "src.txt")
+			if err := os.WriteFile(src, []byte("data"), 0644); err != nil {
+				t.Fatal(err)
+			}
+			dstDir := filepath.Join(dir, "dst")
+			if err := os.Mkdir(dstDir, 0755); err != nil {
+				t.Fatal(err)
+			}
+			targets := []string{dstDir}
+			link := filepath.Join(dir, "dirlink")
+			if err := os.Symlink(dstDir, link); err == nil {
+				targets = append(targets, link)
+			}
+
+			for _, dst := range targets {
+				got, err := op(src, dst)
+				var mv *ErrFailedMovingFile
+				if got != "" || !errors.As(err, &mv) || !errors.Is(err, fs.ErrExist) {
+					t.Fatalf("%s(%q) = %q, %v; want \"\", *ErrFailedMovingFile matching fs.ErrExist", name, dst, got, err)
+				}
+				if errors.Is(err, ErrMaxAttemptsReached) {
+					t.Fatalf("%s(%q) retried until exhaustion: %v", name, dst, err)
+				}
+				if n := strings.Count(err.Error(), "failed moving file"); n != 1 {
+					t.Fatalf("%s(%q) error wrapped %d times: %v", name, dst, n, err)
+				}
+				if !Exists(src) {
+					t.Fatalf("%s(%q) consumed the source", name, dst)
+				}
+				entries, err := os.ReadDir(dstDir)
+				if err != nil || len(entries) != 0 {
+					t.Fatalf("destination directory modified: %v, %v", entries, err)
+				}
+			}
+		})
+	}
+}
+
+func TestMoveOntoDanglingSymlink(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src.txt")
+	if err := os.WriteFile(src, []byte("data"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	dst := filepath.Join(dir, "dst.txt")
+	if err := os.Symlink(filepath.Join(dir, "nowhere"), dst); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	got, err := Move(src, dst)
+	want := filepath.Join(dir, "dst-1.txt")
+	if err != nil || got != want {
+		t.Fatalf("Move = %q, %v; want %q, nil", got, err, want)
+	}
+	if target, err := os.Readlink(dst); err != nil || target != filepath.Join(dir, "nowhere") {
+		t.Fatalf("dangling symlink changed: %q, %v", target, err)
+	}
+}
+
+func TestFindAvailableNameSkipsNonFiles(t *testing.T) {
+	dir := t.TempDir()
+	base := filepath.Join(dir, "a.txt")
+	// a-1.txt is a directory; it is an occupied name, not a free slot.
+	if err := os.Mkdir(filepath.Join(dir, "a-1.txt"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(dir, "a-2.txt")
+	for name, fn := range map[string]func(string) (string, error){
+		"Inc": FindAvailableNameInc, "Cont": FindAvailableNameCont, "Auto": FindAvailableNameAuto,
+	} {
+		if got, err := fn(base); err != nil || got != want {
+			t.Errorf("FindAvailableName%s = %q, %v; want %q", name, got, err, want)
+		}
+	}
+}
+
+func TestMissingSourceHasNoSideEffects(t *testing.T) {
+	ops := map[string]func(string, string) (string, error){
+		"Move": Move, "Copy": Copy, "Rename": Rename,
+	}
+	for name, op := range ops {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			src := filepath.Join(dir, "missing.txt")
+			if err := os.Mkdir(filepath.Join(dir, "existing"), 0755); err != nil {
+				t.Fatal(err)
+			}
+			for _, dst := range []string{
+				filepath.Join(dir, "new", "deep", "dst.txt"),
+				filepath.Join(dir, "existing"),
+			} {
+				got, err := op(src, dst)
+				if got != "" || !errors.Is(err, fs.ErrNotExist) {
+					t.Fatalf("%s(missing, %q) = %q, %v; want \"\", fs.ErrNotExist", name, dst, got, err)
+				}
+			}
+			if _, err := os.Stat(filepath.Join(dir, "new")); !errors.Is(err, fs.ErrNotExist) {
+				t.Fatalf("%s created destination directories for a missing source", name)
+			}
+		})
 	}
 }
