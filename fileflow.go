@@ -334,9 +334,6 @@ func (f *Flow) MoveResult(ctx context.Context, src, dst string) (Result, error) 
 	if err := f.validateRegularFile(src, dst); err != nil {
 		return Result{}, err
 	}
-	if sameFile(src, dst) {
-		return Result{}, ErrSameFile
-	}
 
 	r, renamed, err := f.rename(ctx, src, dst, f.Verify)
 	if err != nil {
@@ -618,13 +615,13 @@ func compare(ctx context.Context, file1, file2 string, h hash.Hash) (bool, error
 	if err != nil {
 		return false, fmt.Errorf("opening first file: %w", err)
 	}
-	defer f1.Close()
+	defer func() { _ = f1.Close() }() // read-only; nothing to flush
 
 	f2, err := os.Open(file2)
 	if err != nil {
 		return false, fmt.Errorf("opening second file: %w", err)
 	}
-	defer f2.Close()
+	defer func() { _ = f2.Close() }()
 
 	var r1, r2 io.Reader = f1, f2
 	if ctx.Done() != nil {
@@ -734,10 +731,10 @@ func (f *Flow) CopyResult(ctx context.Context, src, dst string) (Result, error) 
 			return "", sum, nil, err
 		}
 		if err := ctx.Err(); err != nil {
-			os.Remove(tmpName)
+			_ = os.Remove(tmpName)
 			return "", sum, nil, err
 		}
-		return tmpName, sum, func() { os.Remove(tmpName) }, nil
+		return tmpName, sum, func() { _ = os.Remove(tmpName) }, nil
 	})
 }
 
@@ -754,7 +751,7 @@ func (f *Flow) copyToTemp(ctx context.Context, src, dir string) (string, Digest,
 	if err != nil {
 		return "", sum, fmt.Errorf("opening source file: %w", err)
 	}
-	defer sourceFile.Close()
+	defer func() { _ = sourceFile.Close() }() // read-only; nothing to flush
 
 	// Stat the open source before io.Copy so the captured access time is the
 	// pre-copy value, not one bumped by reading the file.
@@ -771,8 +768,9 @@ func (f *Flow) copyToTemp(ctx context.Context, src, dir string) (string, Digest,
 	success := false
 	defer func() {
 		if !success {
-			tmp.Close()
-			os.Remove(tmpName)
+			// Best-effort cleanup; the original error is what matters.
+			_ = tmp.Close()
+			_ = os.Remove(tmpName)
 		}
 	}()
 
@@ -869,7 +867,7 @@ func hashFile(ctx context.Context, path string) (Digest, error) {
 	if err != nil {
 		return sum, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	var r io.Reader = file
 	if ctx.Done() != nil {
 		r = ctxReader{ctx, file}
